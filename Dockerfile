@@ -15,6 +15,4 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/tmp && chmod 777 /app/tmp
-
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--timeout", "120", "app:app"]
+CMD ["flask", "run", "--host=0.0.0.0", "--port=5000"]

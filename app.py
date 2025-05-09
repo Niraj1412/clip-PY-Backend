@@ -1212,51 +1212,25 @@ def merge_clips_route():
                             
                             # Configure yt-dlp with cookies and extra options
                             ydl_opts = {
-                                'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
-                                'outtmpl': input_path,
-                                'quiet': False,
-                                'verbose': True,
+                                'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]', # Limit to 720p to avoid throttling
+                                'outtmpl': input_path, # Save directly to the target path
+                                'quiet': False,  # Show output for better debugging
+                                'verbose': True,  # More detailed output
                                 'noplaylist': True,
                                 'progress_hooks': [lambda d: print(f"yt-dlp: {d['status']}") if d['status'] in ['downloading', 'finished'] else None],
-                                'nocheckcertificate': True,
-                                'ignoreerrors': True,
-                                'no_warnings': False,
-                                'retries': 10,
-                                'fragment_retries': 10,
-                                'skip_unavailable_fragments': True,
-                                'extractor_retries': 5,
-                                'file_access_retries': 5,
-                                'hls_prefer_native': True,
-                                'hls_use_mpegts': True,
+                                'nocheckcertificate': True,  # Skip HTTPS certificate validation
+                                'ignoreerrors': True,  # Continue on download errors
+                                'no_warnings': False,  # Show warnings
+                                'retries': 10,  # Number of retries for HTTP requests
+                                'fragment_retries': 10,  # Number of retries for fragments
+                                'skip_unavailable_fragments': True,  # Skip unavailable fragments
+                                'extractor_retries': 5,  # Number of retries for extractor errors
+                                'file_access_retries': 5,  # Number of retries for file access
+                                'hls_prefer_native': True,  # Use native HLS downloader
+                                'hls_use_mpegts': True,  # Use MPEG-TS format for HLS
                                 'external_downloader_args': ['ffmpeg:-nostats', 'ffmpeg:-loglevel', 'ffmpeg:warning'],
-
-                                # Updated cookie handling - use file if exists, otherwise don't try browser extraction
-                                'cookiefile': os.path.join(BASE_DIR, 'youtube_cookies.txt') if os.path.exists(os.path.join(BASE_DIR, 'youtube_cookies.txt')) else None,
-
-                                # More robust HTTP headers
-                                'http_headers': {
-                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                                    'Accept-Language': 'en-US,en;q=0.5',
-                                    'Sec-Fetch-Mode': 'navigate',
-                                    'Dnt': '1',
-                                    'Connection': 'keep-alive',
-                                    'Upgrade-Insecure-Requests': '1',
-                                    'Sec-Fetch-Dest': 'document',
-                                    'Sec-Fetch-Site': 'none',
-                                    'Sec-Fetch-User': '?1',
-                                    'Sec-Ch-Ua': '" Not A;Brand";v="99", "Chromium";v="91"',
-                                    'Sec-Ch-Ua-Mobile': '?0',
-                                    'Referer': 'https://www.youtube.com/'
-                                },
-
-                                # Additional options for better compatibility
-                                'compat_opts': ['no-youtube-unavailable-videos'],
-                                'extractor_args': {
-                                    'youtube': {
-                                        'skip': ['hls', 'dash', 'translated_subs']
-                                    }
-                                }
+                                # Use browser cookies to mimic the browser, bypass age verification and geo-restriction
+                                'cookiesfrombrowser': (browser_to_try if 'browser_to_try' in locals() else 'chrome')
                             }
                             
                             # Add cookies file if available
