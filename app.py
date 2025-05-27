@@ -1075,6 +1075,12 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
         'fragment_retries': 10,
         'extractor_retries': 3,
         'ignoreerrors': False,
+        # Add these options to handle file locking issues
+        'noprogress': True,
+        'nooverwrites': False,
+        'continuedl': False,
+        'nopart': True,  # Disable partial downloads to avoid .part files
+        'windowsfilenames': True if sys.platform == 'win32' else False,
     }
     
     if use_cookies and validate_cookies_file(COOKIES_FILE):
@@ -1086,17 +1092,39 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
         }
     
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Try normal URL first
+        # First try to remove any existing file
+        if os.path.exists(input_path):
             try:
+                os.remove(input_path)
+            except Exception as e:
+                print(f"Warning: Could not remove existing file {input_path}: {str(e)}")
+        
+        # Try normal URL first
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
-            except Exception:
-                # Fall back to embed URL
+        except Exception as e:
+            print(f"First download attempt failed, retrying with embed URL: {str(e)}")
+            # Fall back to embed URL
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([f'https://www.youtube.com/embed/{video_id}'])
         
-        return os.path.exists(input_path) and os.path.getsize(input_path) > 1024
+        # Verify the download
+        if not os.path.exists(input_path):
+            raise Exception("Downloaded file not found")
+            
+        if os.path.getsize(input_path) < 1024:
+            raise Exception("Downloaded file is too small or empty")
+            
+        return True
     except Exception as e:
         print(f"yt-dlp download failed: {str(e)}")
+        # Clean up any partial files
+        if os.path.exists(input_path):
+            try:
+                os.remove(input_path)
+            except:
+                pass
         return False
 
 def download_video(video_id, input_path):
@@ -1318,3 +1346,6 @@ def merge_clips_route():
             'status': False,
             'type': 'unexpected_error'
         }), 500
+        
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=PORT)
