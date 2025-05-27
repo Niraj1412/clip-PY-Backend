@@ -42,7 +42,7 @@ s3_client = boto3.client(
 )
 
 # Cookie configuration
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = '/app' if os.path.exists('/app') else os.path.dirname(os.path.abspath(__file__))
 COOKIES_FILE = os.path.join(BASE_DIR, 'youtube_cookies.txt')
 VALID_COOKIE_HEADERS = [
     '# HTTP Cookie File',
@@ -1065,7 +1065,7 @@ def download_via_rapidapi(video_id, input_path):
         return False
 
 def download_via_ytdlp(video_id, input_path, use_cookies=True):
-    """Download video using yt-dlp with optional cookies"""
+    """Download video using yt-dlp with improved error handling and retries"""
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
         'outtmpl': input_path,
@@ -1075,12 +1075,15 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
         'fragment_retries': 10,
         'extractor_retries': 3,
         'ignoreerrors': False,
-        # Add these options to handle file locking issues
         'noprogress': True,
         'nooverwrites': False,
         'continuedl': False,
-        'nopart': True,  # Disable partial downloads to avoid .part files
-        'windowsfilenames': True if sys.platform == 'win32' else False,
+        'nopart': True,
+        'windowsfilenames': sys.platform == 'win32',
+        'paths': {
+            'home': DOWNLOAD_DIR,  # Set the download directory explicitly
+            'temp': TMP_DIR        # Set temp directory
+        }
     }
     
     if use_cookies and validate_cookies_file(COOKIES_FILE):
@@ -1092,12 +1095,8 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
         }
     
     try:
-        # First try to remove any existing file
-        if os.path.exists(input_path):
-            try:
-                os.remove(input_path)
-            except Exception as e:
-                print(f"Warning: Could not remove existing file {input_path}: {str(e)}")
+        # Ensure download directory exists
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
         
         # Try normal URL first
         try:
@@ -1348,4 +1347,4 @@ def merge_clips_route():
         }), 500
         
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=PORT)
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)))
