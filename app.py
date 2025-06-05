@@ -1084,7 +1084,6 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
             'home': DOWNLOAD_DIR,
             'temp': TMP_DIR
         },
-        # Additional options for better YouTube compatibility
         'extractor_args': {
             'youtube': {
                 'skip': ['dash', 'hls']
@@ -1094,19 +1093,24 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.5',
             'Referer': 'https://www.youtube.com/'
-        }
+        },
+        # Add these new options for better authentication handling
+        'cookiefile': COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
+        'extract_flat': False,
+        'mark_watched': False,
+        'throttled_rate': '100K',
+        'sleep_interval': 5,
+        'max_sleep_interval': 30,
+        'force_ipv4': True,
+        'geo_bypass': True,
+        'geo_bypass_country': 'US',
+        'geo_bypass_ip_block': None
     }
-    
-    # Always try with cookies first if available
-    if validate_cookies_file(COOKIES_FILE):
-        ydl_opts['cookiefile'] = COOKIES_FILE
-    else:
-        print("Warning: No valid cookies file found, trying without authentication")
     
     try:
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
         
-        # Try different URL formats
+        # Try different URL formats with retries
         url_variants = [
             f'https://www.youtube.com/watch?v={video_id}',
             f'https://www.youtube.com/embed/{video_id}',
@@ -1117,7 +1121,17 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
         for url in url_variants:
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
+                    # Add retry handler
+                    for retry in range(3):
+                        try:
+                            ydl.download([url])
+                            break
+                        except yt_dlp.utils.DownloadError as e:
+                            if 'Sign in to confirm you\'re not a bot' in str(e) and retry < 2:
+                                print(f"Bot detection triggered, retrying ({retry + 1}/3)...")
+                                time.sleep(5 * (retry + 1))  # Exponential backoff
+                                continue
+                            raise
                 
                 # Verify the download
                 if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
@@ -1157,9 +1171,11 @@ def download_video(video_id, input_path):
                 return True
         except Exception as e:
             last_error = e
+            print(f"Download method failed: {str(e)}")
             continue
     
-    raise Exception(f"All download methods failed: {str(last_error)}")
+    error_msg = str(last_error) if last_error else "All download methods failed without specific error"
+    raise Exception(f"All download methods failed: {error_msg}")
 
 def validate_and_refresh_cookies():
     """Ensure we have valid cookies and refresh them if needed"""
@@ -1170,26 +1186,67 @@ def validate_and_refresh_cookies():
             browsers = ['chrome', 'firefox', 'edge', 'brave']
             for browser in browsers:
                 try:
+                    print(f"Attempting to generate cookies from {browser}...")
                     cmd = [
                         sys.executable, "-m", "yt_dlp",
                         "--cookies-from-browser", browser,
                         "--cookies", COOKIES_FILE,
                         "--skip-download",
+                        "--no-check-certificate",
                         "https://www.youtube.com"
                     ]
-                    subprocess.run(cmd, check=True, timeout=30)
+                    result = subprocess.run(
+                        cmd, 
+                        check=True, 
+                        timeout=60,
+                        capture_output=True,
+                        text=True
+                    )
+                    
                     if validate_cookies_file(COOKIES_FILE):
                         print(f"Successfully generated cookies from {browser}")
                         return True
+                    else:
+                        print(f"Failed to generate valid cookies from {browser}")
+                        print("Command output:", result.stdout)
+                        print("Command error:", result.stderr)
+                except subprocess.TimeoutExpired:
+                    print(f"Timeout generating cookies from {browser}")
+                    continue
                 except Exception as e:
-                    print(f"Failed to generate cookies from {browser}: {str(e)}")
+                    print(f"Error generating cookies from {browser}: {str(e)}")
                     continue
             return False
         except Exception as e:
             print(f"Error generating cookies: {str(e)}")
             return False
-    return True
-
+    
+    # Validate the cookies are still working
+    try:
+        test_cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--cookies", COOKIES_FILE,
+            "--skip-download",
+            "--print", "%(title)s",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        ]
+        result = subprocess.run(
+            test_cmd,
+            timeout=30,
+            capture_output=True,
+            text=True
+        )
+        
+        if "Sign in to confirm you're not a bot" in result.stderr:
+            print("Cookies are no longer valid, attempting to refresh...")
+            os.remove(COOKIES_FILE)
+            return validate_and_refresh_cookies()
+            
+        return True
+    except Exception as e:
+        print(f"Error validating cookies: {str(e)}")
+        return False
+    
 @app.route('/merge-clips', methods=['POST'])
 def merge_clips_route():
     
