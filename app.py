@@ -1155,15 +1155,46 @@ def merge_clips_route():
             }), 500
             
         data = request.get_json()
+        if not data:
+            return jsonify({
+                'error': 'No data provided',
+                'status': False
+            }), 400
+            
         clips = data.get('clips', [])
-        cleanup_downloads = data.get('cleanupDownloads', True)
-        cleanup_all_downloads = data.get('cleanupAllDownloads', False)
-        
         if not clips:
             return jsonify({
                 'error': 'No clips provided',
                 'status': False
             }), 400
+
+        # Validate each clip
+        for clip in clips:
+            if not isinstance(clip, dict):
+                return jsonify({
+                    'error': 'Invalid clip format - expected dictionary',
+                    'status': False
+                }), 400
+                
+            if not clip.get('videoId'):
+                return jsonify({
+                    'error': 'Missing videoId in clip',
+                    'status': False
+                }), 400
+                
+            try:
+                start_time = float(clip.get('startTime', 0))
+                end_time = float(clip.get('endTime', 0))
+                if end_time <= start_time:
+                    return jsonify({
+                        'error': f'Invalid time range: start_time ({start_time}) must be less than end_time ({end_time})',
+                        'status': False
+                    }), 400
+            except ValueError:
+                return jsonify({
+                    'error': 'Invalid startTime or endTime - must be numbers',
+                    'status': False
+                }), 400
 
         timestamp = int(time.time())
         file_list_path = os.path.join(TMP_DIR, f'filelist_{timestamp}.txt')
@@ -1177,32 +1208,44 @@ def merge_clips_route():
                 start_time = float(clip.get('startTime', 0))
                 end_time = float(clip.get('endTime', 0))
                 
-                if not video_id:
-                    raise ValueError(f"Missing videoId in clip: {clip}")
-                if end_time <= start_time:
-                    raise ValueError(f"Invalid time range: start_time ({start_time}) must be less than end_time ({end_time})")
-                
                 input_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
                 
-                # Download video if needed
-                if not os.path.exists(input_path) or os.path.getsize(input_path) == 0:
-                    print(f"Downloading video {video_id}")
-                    if not download_video(video_id, input_path):
-                        raise Exception(f"Failed to download video {video_id}")
-                
-                # Verify downloaded file
-                if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
-                    raise ValueError(f"Downloaded file is invalid or too small: {input_path}")
+                # Download video if needed (with retries)
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        if not os.path.exists(input_path) or os.path.getsize(input_path) == 0:
+                            print(f"Downloading video {video_id} (attempt {attempt + 1})")
+                            if not download_video(video_id, input_path):
+                                raise Exception(f"Failed to download video {video_id}")
+                        
+                        # Verify downloaded file
+                        if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
+                            raise ValueError(f"Downloaded file is invalid or too small: {input_path}")
+                        break
+                    except Exception as e:
+                        if attempt == max_retries - 1:
+                            raise
+                        time.sleep(2)  # Wait before retrying
+                        continue
                 
                 # Create trimmed clip
                 clip_output = os.path.join(TMP_DIR, f'clip_{video_id}_{int(start_time)}_{int(end_time)}.mp4')
                 
-                # Process clip with ffmpeg
-                if not safe_ffmpeg_process(input_path, clip_output, start_time, end_time):
-                    raise Exception(f"Failed to process clip {video_id}")
-                
-                if not os.path.exists(clip_output) or os.path.getsize(clip_output) == 0:
-                    raise Exception(f"Failed to create clip: {clip_output}")
+                # Process clip with ffmpeg (with retries)
+                for attempt in range(max_retries):
+                    try:
+                        if not safe_ffmpeg_process(input_path, clip_output, start_time, end_time):
+                            raise Exception(f"Failed to process clip {video_id}")
+                        
+                        if not os.path.exists(clip_output) or os.path.getsize(clip_output) == 0:
+                            raise Exception(f"Failed to create clip: {clip_output}")
+                        break
+                    except Exception as e:
+                        if attempt == max_retries - 1:
+                            raise
+                        time.sleep(1)
+                        continue
                 
                 processed_clips.append({
                     'path': clip_output,
@@ -1213,65 +1256,96 @@ def merge_clips_route():
                 raise ValueError("No clips were successfully processed")
                 
             # Create file list for concatenation
-            with open(file_list_path, 'w') as f:
+            with open(file_list_path, 'w', encoding='utf-8') as f:
                 for clip in processed_clips:
                     f.write(f"file '{clip['path']}'\n")
 
             time.sleep(1)  # Allow file handles to release
 
-            # Merge clips
-            merge_result = subprocess.run([
-                ffmpeg_path if ffmpeg_path else 'ffmpeg',
-                '-f', 'concat',
-                '-safe', '0',
-                '-i', file_list_path,
-                '-c', 'copy',  # Try stream copy first
-                '-y',
-                output_path
-            ], capture_output=True, text=True)
+            # Merge clips (try both stream copy and re-encode methods)
+            merge_success = False
+            merge_errors = []
             
-            if merge_result.returncode != 0:
-                # If stream copy fails, try re-encoding
-                merge_result = subprocess.run([
-                    ffmpeg_path if ffmpeg_path else 'ffmpeg',
-                    '-f', 'concat',
-                    '-safe', '0',
-                    '-i', file_list_path,
-                    '-c:v', 'libx264',
-                    '-preset', 'fast',
-                    '-c:a', 'aac',
-                    '-y',
-                    output_path
-                ], capture_output=True, text=True)
+            for method in ['copy', 'encode']:
+                try:
+                    if method == 'copy':
+                        cmd = [
+                            ffmpeg_path if ffmpeg_path else 'ffmpeg',
+                            '-f', 'concat',
+                            '-safe', '0',
+                            '-i', file_list_path,
+                            '-c', 'copy',
+                            '-y', output_path
+                        ]
+                    else:
+                        cmd = [
+                            ffmpeg_path if ffmpeg_path else 'ffmpeg',
+                            '-f', 'concat',
+                            '-safe', '0',
+                            '-i', file_list_path,
+                            '-c:v', 'libx264',
+                            '-preset', 'fast',
+                            '-crf', '23',
+                            '-c:a', 'aac',
+                            '-b:a', '128k',
+                            '-y', output_path
+                        ]
+                    
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=300  # 5 minute timeout
+                    )
+                    
+                    if result.returncode != 0:
+                        raise Exception(result.stderr)
+                    
+                    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                        raise Exception("Merged file is empty or missing")
+                    
+                    merge_success = True
+                    break
                 
-                if merge_result.returncode != 0:
-                    raise Exception(f"Failed to merge clips: {merge_result.stderr}")
-
-            # Verify merged file
-            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-                raise Exception("Merged file is empty or missing")
+                except Exception as e:
+                    merge_errors.append(f"{method} method failed: {str(e)}")
+                    continue
             
-            # Upload to S3
+            if not merge_success:
+                raise Exception(f"All merge methods failed:\n" + "\n".join(merge_errors))
+            
+            # Upload to S3 with retries
             unique_filename = f"merged_{uuid.uuid4()}.mp4"
-            try:
-                s3_client.upload_file(
-                    output_path,
-                    AWS_S3_BUCKET,
-                    unique_filename,
-                    ExtraArgs={'ContentType': 'video/mp4'}
-                )
-                
-                # Generate presigned URL
-                s3_url = s3_client.generate_presigned_url(
-                    'get_object',
-                    Params={
-                        'Bucket': AWS_S3_BUCKET,
-                        'Key': unique_filename
-                    },
-                    ExpiresIn=3600
-                )
-            except Exception as upload_error:
-                raise Exception(f"Failed to upload to S3: {str(upload_error)}")
+            max_upload_attempts = 3
+            s3_url = None
+            
+            for attempt in range(max_upload_attempts):
+                try:
+                    s3_client.upload_file(
+                        output_path,
+                        AWS_S3_BUCKET,
+                        unique_filename,
+                        ExtraArgs={
+                            'ContentType': 'video/mp4',
+                            'ACL': 'public-read'  # Ensure the file is accessible
+                        }
+                    )
+                    
+                    # Generate presigned URL
+                    s3_url = s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={
+                            'Bucket': AWS_S3_BUCKET,
+                            'Key': unique_filename
+                        },
+                        ExpiresIn=604800  # 7 days expiration
+                    )
+                    break
+                except Exception as upload_error:
+                    if attempt == max_upload_attempts - 1:
+                        raise Exception(f"Failed to upload to S3 after {max_upload_attempts} attempts: {str(upload_error)}")
+                    time.sleep(2)
+                    continue
 
             return jsonify({
                 'message': 'Clips merged successfully',
@@ -1282,66 +1356,42 @@ def merge_clips_route():
                 'fileNames3': unique_filename
             })
 
-        except requests.exceptions.HTTPError as http_err:
-            status_code = http_err.response.status_code if hasattr(http_err, 'response') else 500
-            return jsonify({
-                'error': f"HTTP Error {status_code}",
-                'status': False,
-                'type': 'http_error'
-            }), status_code
-        except yt_dlp.utils.DownloadError as dl_err:
-            return jsonify({
-                'error': f"Download failed: {str(dl_err)}",
-                'status': False,
-                'type': 'download_error'
-            }), 400
         except Exception as e:
+            print(f"Error processing merge request: {str(e)}")
+            traceback.print_exc()
             return jsonify({
-                'error': f"Processing error: {str(e)}",
+                'error': str(e),
                 'status': False,
                 'type': 'processing_error'
             }), 500
+            
         finally:
-            # Cleanup temporary files
+            # Enhanced cleanup with error handling
+            cleanup_errors = []
+            
+            def safe_remove(path):
+                try:
+                    if path and os.path.exists(path):
+                        os.remove(path)
+                except Exception as e:
+                    cleanup_errors.append(f"Failed to remove {path}: {str(e)}")
+            
+            # Cleanup processed clips
             for clip in processed_clips:
-                try:
-                    if os.path.exists(clip['path']):
-                        os.remove(clip['path'])
-                except Exception:
-                    pass
-            try:
-                if os.path.exists(file_list_path):
-                    os.remove(file_list_path)
-                if os.path.exists(output_path):
-                    os.remove(output_path)
-            except Exception:
-                pass
-
-            # Cleanup downloaded videos if requested
-            if cleanup_downloads:
-                try:
-                    if cleanup_all_downloads:
-                        for filename in os.listdir(DOWNLOAD_DIR):
-                            if filename.endswith('.mp4'):
-                                try:
-                                    os.remove(os.path.join(DOWNLOAD_DIR, filename))
-                                except Exception:
-                                    pass
-                    else:
-                        video_ids = set(clip.get('videoId') for clip in clips if clip.get('videoId'))
-                        for video_id in video_ids:
-                            try:
-                                os.remove(os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4"))
-                            except Exception:
-                                pass
-                except Exception as cleanup_error:
-                    print(f"Warning: Error cleaning up Download folder: {str(cleanup_error)}")
+                safe_remove(clip.get('path'))
+            
+            # Cleanup other temp files
+            safe_remove(file_list_path)
+            safe_remove(output_path)
+            
+            if cleanup_errors:
+                print("Cleanup warnings:", "\n".join(cleanup_errors))
 
     except Exception as e:
         print(f"Unhandled exception in /merge-clips route:")
         traceback.print_exc()
         return jsonify({
-            'error': str(e),
+            'error': f"Internal server error: {str(e)}",
             'status': False,
             'type': 'unexpected_error'
         }), 500
