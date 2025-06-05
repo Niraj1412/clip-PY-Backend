@@ -60,6 +60,30 @@ def backup_cookies():
         print(f"Error backing up cookies: {str(e)}")
         return False
 
+def generate_youtube_cookies():
+    """Generate YouTube cookies from browser"""
+    try:
+        # Try different browsers
+        browsers = ['chrome', 'firefox', 'edge', 'brave']
+        for browser in browsers:
+            try:
+                cmd = [
+                    sys.executable, "-m", "yt_dlp",
+                    "--cookies-from-browser", browser,
+                    "--cookies", COOKIES_FILE,
+                    "--skip-download",
+                    "https://www.youtube.com"
+                ]
+                subprocess.run(cmd, check=True, timeout=60)
+                if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+                    return True
+            except:
+                continue
+        return False
+    except Exception as e:
+        print(f"Error generating cookies: {str(e)}")
+        return False
+
 def restore_cookies_backup():
     """Restore cookies from backup"""
     try:
@@ -1048,7 +1072,7 @@ def download_via_rapidapi(video_id, input_path):
         return False
 
 def download_via_ytdlp(video_id, input_path, use_cookies=True):
-    """Download video using yt-dlp with improved error handling"""
+    """Download video using yt-dlp with improved error handling and cookie management"""
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
         'outtmpl': input_path,
@@ -1069,89 +1093,192 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
         },
         'extractor_args': {
             'youtube': {
-                'skip': ['dash', 'hls']
+                'skip': ['dash', 'hls'],
+                'player_client': ['android', 'web']  # Try different clients
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Referer': 'https://www.youtube.com/'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com'
         },
-        # Cookie handling
-        'cookiefile': COOKIES_FILE if (use_cookies and validate_cookies_file(COOKIES_FILE)) else None,
-        # Additional options for better reliability
-        'throttled_rate': '100K',
-        'sleep_interval': 5,
-        'max_sleep_interval': 30,
+        # Enhanced cookie handling
+        'cookiefile': COOKIES_FILE if (use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100) else None,
+        # Network and throttling options
+        'throttled_rate': '1M',  # More generous rate limit
+        'sleep_interval': 2,
+        'max_sleep_interval': 10,
         'force_ipv4': True,
         'geo_bypass': True,
-        'geo_bypass_country': 'US'
+        'geo_bypass_country': 'US',
+        # Additional reliability options
+        'extract_flat': False,
+        'concurrent_fragment_downloads': 3,
+        'buffersize': '16M',
+        'no_check_certificate': True,
+        'verbose': True
     }
     
     try:
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
         
-        # Try different URL formats
+        # Try different URL formats with priority
         url_variants = [
             f'https://www.youtube.com/watch?v={video_id}',
+            f'https://youtu.be/{video_id}',
             f'https://www.youtube.com/embed/{video_id}',
-            f'https://youtu.be/{video_id}'
+            f'https://m.youtube.com/watch?v={video_id}'
         ]
         
         last_error = None
         for url in url_variants:
             try:
+                print(f"Attempting download from: {url}")
+                
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
+                    info_dict = ydl.extract_info(url, download=True)
+                    
+                    # Verify download was successful
+                    if not info_dict.get('requested_downloads'):
+                        raise Exception("No downloads were requested")
                 
-                # Verify the download
-                if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
-                    return True
+                # Additional verification
+                if not os.path.exists(input_path):
+                    raise Exception("Downloaded file not found")
+                    
+                if os.path.getsize(input_path) < 1024:
+                    raise Exception("Downloaded file is too small (possibly incomplete)")
                 
-            except Exception as e:
+                print(f"Successfully downloaded video to: {input_path}")
+                return True
+                
+            except yt_dlp.utils.DownloadError as e:
+                if "Sign in to confirm you're not a bot" in str(e):
+                    print("YouTube requires authentication - attempting with cookies...")
+                    if not use_cookies and os.path.exists(COOKIES_FILE):
+                        return download_via_ytdlp(video_id, input_path, use_cookies=True)
                 last_error = e
                 print(f"Download attempt failed for {url}: {str(e)}")
                 continue
+            except Exception as e:
+                last_error = e
+                print(f"Error downloading from {url}: {str(e)}")
+                continue
         
         if last_error:
+            # Attempt one last time with different parameters if all attempts failed
+            print("All standard attempts failed, trying emergency fallback...")
+            ydl_opts['format'] = 'worst[ext=mp4]'  # Try lowest quality as last resort
+            ydl_opts['extractor_args']['youtube']['skip'] = []  # Don't skip any formats
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url_variants[0]])
+                if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
+                    return True
+            except Exception as fallback_error:
+                last_error = fallback_error
+            
             raise last_error
             
         raise Exception("All download attempts failed")
         
     except Exception as e:
         print(f"yt-dlp download failed: {str(e)}")
+        # Clean up potentially corrupted files
         if os.path.exists(input_path):
             try:
                 os.remove(input_path)
-            except:
-                pass
+            except Exception as cleanup_error:
+                print(f"Failed to clean up file {input_path}: {str(cleanup_error)}")
         return False
 
 def download_video(video_id, input_path):
-    """Attempt to download video using multiple methods with priority"""
+    """Attempt to download video using multiple methods with priority and enhanced cookie handling"""
+    # Ensure download directory exists
+    os.makedirs(os.path.dirname(input_path), exist_ok=True)
+    
+    # Method priority list with improved configuration
     methods = [
-        # Try with cookies first
-        lambda: download_via_ytdlp(video_id, input_path, use_cookies=True),
-        # Try without cookies
-        lambda: download_via_ytdlp(video_id, input_path, use_cookies=False),
-        # Try RapidAPI
-        lambda: download_via_rapidapi(video_id, input_path),
-        # Try pytube fallback
-        lambda: download_via_pytube(video_id, input_path)
+        # 1. First try with yt-dlp and cookies (if available)
+        {
+            'name': 'yt-dlp with cookies',
+            'function': lambda: download_via_ytdlp(video_id, input_path, use_cookies=True),
+            'retries': 2,
+            'delay': 1
+        },
+        # 2. Try yt-dlp without cookies
+        {
+            'name': 'yt-dlp without cookies',
+            'function': lambda: download_via_ytdlp(video_id, input_path, use_cookies=False),
+            'retries': 2,
+            'delay': 1
+        },
+        # 3. Try RapidAPI fallback
+        {
+            'name': 'RapidAPI',
+            'function': lambda: download_via_rapidapi(video_id, input_path),
+            'retries': 1,
+            'delay': 0
+        },
+        # 4. Final fallback to pytube
+        {
+            'name': 'pytube',
+            'function': lambda: download_via_pytube(video_id, input_path),
+            'retries': 1,
+            'delay': 0
+        }
     ]
     
-    last_error = None
-    for method in methods:
-        try:
-            if method():
-                return True
-        except Exception as e:
-            last_error = e
-            print(f"Download method failed: {str(e)}")
-            continue
+    last_errors = []
     
-    error_msg = str(last_error) if last_error else "All download methods failed"
-    raise Exception(f"All download methods failed: {error_msg}")
+    for method in methods:
+        for attempt in range(method['retries']):
+            try:
+                # Add delay between attempts if specified
+                if attempt > 0 and method['delay'] > 0:
+                    time.sleep(method['delay'])
+                
+                print(f"Attempting download ({method['name']}), attempt {attempt + 1}/{method['retries']}")
+                
+                if method['function']():
+                    print(f"Successfully downloaded using {method['name']}")
+                    return True
+                
+            except Exception as e:
+                error_msg = f"{method['name']} failed (attempt {attempt + 1}): {str(e)}"
+                last_errors.append(error_msg)
+                print(error_msg)
+                
+                # Clean up potentially corrupted files
+                if os.path.exists(input_path):
+                    try:
+                        os.remove(input_path)
+                    except:
+                        pass
+                continue
+    
+    # If all methods failed, try to generate fresh cookies as last resort
+    print("All methods failed, attempting to generate fresh cookies...")
+    try:
+        if generate_youtube_cookies():
+            print("Retrying with fresh cookies...")
+            if download_via_ytdlp(video_id, input_path, use_cookies=True):
+                return True
+    except Exception as e:
+        last_errors.append(f"Cookie generation failed: {str(e)}")
+    
+    # Prepare comprehensive error message
+    error_details = "\n".join(last_errors)
+    raise Exception(
+        f"All download methods failed for video {video_id}.\n"
+        f"Attempted methods:\n{error_details}\n"
+        "Possible solutions:\n"
+        "1. Ensure you have a valid cookies file (youtube_cookies.txt)\n"
+        "2. Try again later (YouTube might be rate-limiting)\n"
+        "3. Check your network connection\n"
+        "4. Verify the video is available and not age-restricted"
+    )
 
 def download_via_pytube(video_id, input_path):
     """Fallback download method using pytube"""
