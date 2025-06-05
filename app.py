@@ -49,14 +49,37 @@ VALID_COOKIE_HEADERS = [
     '# Netscape HTTP Cookie File'
 ]
 
+def backup_cookies():
+    """Create a backup of the cookies file"""
+    try:
+        if os.path.exists(COOKIES_FILE):
+            shutil.copy2(COOKIES_FILE, COOKIES_BACKUP_FILE)
+            return True
+        return False
+    except Exception as e:
+        print(f"Error backing up cookies: {str(e)}")
+        return False
+
+def restore_cookies_backup():
+    """Restore cookies from backup"""
+    try:
+        if os.path.exists(COOKIES_BACKUP_FILE):
+            shutil.copy2(COOKIES_BACKUP_FILE, COOKIES_FILE)
+            return True
+        return False
+    except Exception as e:
+        print(f"Error restoring cookies backup: {str(e)}")
+        return False
+
 def validate_cookies_file(cookies_path):
     """Validate the cookies file format and size with more robust checks"""
     if not os.path.exists(cookies_path):
         print(f"Cookies file not found at {cookies_path}")
         return False
     
-    if os.path.getsize(cookies_path) < 100:
-        print(f"Cookies file is too small ({os.path.getsize(cookies_path)} bytes)")
+    file_size = os.path.getsize(cookies_path)
+    if file_size < 100:
+        print(f"Cookies file is too small ({file_size} bytes)")
         return False
     
     try:
@@ -64,21 +87,24 @@ def validate_cookies_file(cookies_path):
             first_line = f.readline().strip()
             
             # Check for Netscape format header
-            if not (first_line.startswith('# HTTP Cookie File') or 
-                   first_line.startswith('# Netscape HTTP Cookie File')):
+            if not any(first_line.startswith(valid) for valid in VALID_COOKIE_HEADERS):
                 print(f"Invalid cookies file header: {first_line}")
                 return False
             
             # Check for at least one valid cookie line
+            valid_cookies = 0
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#'):
                     parts = line.split('\t')
                     if len(parts) >= 7:
-                        return True
+                        valid_cookies += 1
             
-            print("No valid cookie entries found in file")
-            return False
+            if valid_cookies == 0:
+                print("No valid cookie entries found in file")
+                return False
+                
+            return True
     except Exception as e:
         print(f"Error reading cookies file: {str(e)}")
         return False
