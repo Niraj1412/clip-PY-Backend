@@ -50,14 +50,37 @@ VALID_COOKIE_HEADERS = [
 ]
 
 def validate_cookies_file(cookies_path):
-    """Validate the cookies file format and size"""
-    if not os.path.exists(cookies_path) or os.path.getsize(cookies_path) < 100:
+    """Validate the cookies file format and size with more robust checks"""
+    if not os.path.exists(cookies_path):
+        print(f"Cookies file not found at {cookies_path}")
         return False
+    
+    if os.path.getsize(cookies_path) < 100:
+        print(f"Cookies file is too small ({os.path.getsize(cookies_path)} bytes)")
+        return False
+    
     try:
         with open(cookies_path, 'r', encoding='utf-8') as f:
             first_line = f.readline().strip()
-            return any(first_line.startswith(header) for header in VALID_COOKIE_HEADERS)
-    except Exception:
+            
+            # Check for Netscape format header
+            if not (first_line.startswith('# HTTP Cookie File') or 
+                   first_line.startswith('# Netscape HTTP Cookie File')):
+                print(f"Invalid cookies file header: {first_line}")
+                return False
+            
+            # Check for at least one valid cookie line
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    parts = line.split('\t')
+                    if len(parts) >= 7:
+                        return True
+            
+            print("No valid cookie entries found in file")
+            return False
+    except Exception as e:
+        print(f"Error reading cookies file: {str(e)}")
         return False
 
 # Check if ffmpeg is available
@@ -403,141 +426,75 @@ def upload_cookies():
 
 @app.route('/generate-cookies', methods=['GET'])
 def generate_cookies():
-    """
-    Generate a cookies file from the user's browser.
-    Query parameters:
-    - browser: The browser to extract cookies from (chrome, firefox, edge, etc.)
-    - custom_path: Optional path to browser profile
-    """
+    """Generate a cookies file from the user's browser"""
     try:
         browser = request.args.get('browser', 'chrome')
         custom_path = request.args.get('custom_path', None)
         
         cookies_file = os.path.join(BASE_DIR, 'youtube_cookies.txt')
         
-        # First check if we have a custom browser path saved
-        browser_config_file = os.path.join(BASE_DIR, 'browser_paths.json')
-        if os.path.exists(browser_config_file) and not custom_path:
-            try:
-                with open(browser_config_file, 'r') as f:
-                    browser_paths = json.load(f)
-                    if browser in browser_paths and os.path.exists(browser_paths[browser]):
-                        custom_path = browser_paths[browser]
-                        print(f"Using saved browser path for {browser}: {custom_path}")
-            except Exception as e:
-                print(f"Error loading browser paths: {str(e)}")
-                # Continue without saved paths
+        # Remove existing cookies file if it exists
+        if os.path.exists(cookies_file):
+            os.remove(cookies_file)
         
-        # Define platform-specific browser profile paths
-        platform_paths = {
-            'win32': {
-                'chrome': os.path.expanduser('~\\AppData\\Local\\Google\\Chrome\\User Data'),
-                'firefox': os.path.expanduser('~\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles'),
-                'edge': os.path.expanduser('~\\AppData\\Local\\Microsoft\\Edge\\User Data'),
-                'brave': os.path.expanduser('~\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data'),
-            },
-            'linux': {
-                'chrome': os.path.expanduser('~/.config/google-chrome'),
-                'chrome-flatpak': os.path.expanduser('~/.var/app/com.google.Chrome/config/google-chrome'),
-                'firefox': os.path.expanduser('~/.mozilla/firefox'),
-                'brave': os.path.expanduser('~/.config/BraveSoftware/Brave-Browser'),
-            },
-            'darwin': {  # macOS
-                'chrome': os.path.expanduser('~/Library/Application Support/Google/Chrome'),
-                'firefox': os.path.expanduser('~/Library/Application Support/Firefox/Profiles'),
-                'safari': os.path.expanduser('~/Library/Safari'),
-                'brave': os.path.expanduser('~/Library/Application Support/BraveSoftware/Brave-Browser'),
-            }
-        }
-        
-        # If custom_path is not provided but we have a default for this platform/browser
-        if not custom_path and sys.platform in platform_paths:
-            # Check if it's a special case like chrome-flatpak
-            if browser in platform_paths[sys.platform]:
-                default_path = platform_paths[sys.platform][browser]
-                print(f"Using default {browser} profile path for {sys.platform}: {default_path}")
-                
-                # Only use the default path if it exists
-                if os.path.exists(default_path):
-                    custom_path = default_path
-                    print(f"Default path exists, will use it")
-                else:
-                    print(f"Default path doesn't exist, continuing without it")
-        
-        # Construct the command
+        # Construct the command with proper Netscape format
         extract_cmd = [
             sys.executable, "-m", "yt_dlp", 
-            "--cookies-from-browser"
+            "--cookies-from-browser", f"{browser}" + (f":{custom_path}" if custom_path else ""),
+            "--cookies", cookies_file,
+            "--skip-download",
+            "--no-check-certificate",
+            "--print", "requested_downloads",
+            "https://www.youtube.com"
         ]
         
-        # Add browser name and optional path
-        if custom_path:
-            extract_cmd.append(f"{browser}:{custom_path}")
-        else:
-            extract_cmd.append(browser)
-            
-        # Add remaining arguments
-        extract_cmd.extend([
-            "--cookies", cookies_file,
-            "-f", "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]",
-            "--print", "requested_downloads",
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Use a popular video to test
-        ])
-        
-        # Run the command
-        print(f"Extracting cookies from {browser} browser with command: {' '.join(extract_cmd)}")
+        print(f"Extracting cookies with command: {' '.join(extract_cmd)}")
         
         try:
-            process = subprocess.run(extract_cmd, capture_output=True, text=True, timeout=30)
-            print(f"Command output: {process.stdout}")
-            print(f"Command errors: {process.stderr}")
-        except subprocess.TimeoutExpired:
-            print("Command timed out after 30 seconds")
-            return jsonify({
-                'message': f"Extraction timed out. The browser profile might be locked or invalid.",
-                'status': False,
-                'command': ' '.join(extract_cmd)
-            }), 400
-        
-        # Check if cookies file was created successfully
-        if not os.path.exists(cookies_file) or os.path.getsize(cookies_file) < 100:
-            # Try to create a log of all available browsers for diagnostic purposes
-            browser_logs = []
-            try:
-                if sys.platform == 'win32':
-                    # On Windows, list common browser profile locations
-                    for browser_name, path in platform_paths['win32'].items():
-                        browser_logs.append(f"{browser_name}: {'Exists' if os.path.exists(path) else 'Not found'} - {path}")
-                else:
-                    # On Linux/Mac, use a command to find browsers
-                    find_cmd = ["which", "google-chrome", "firefox", "brave-browser", "chromium-browser"]
-                    result = subprocess.run(find_cmd, capture_output=True, text=True)
-                    browser_logs.append(f"Found browsers: {result.stdout}")
-            except Exception as e:
-                browser_logs.append(f"Error checking browsers: {str(e)}")
+            process = subprocess.run(
+                extract_cmd, 
+                capture_output=True, 
+                text=True, 
+                timeout=60
+            )
+            
+            if process.returncode != 0:
+                print(f"Cookie extraction failed with return code {process.returncode}")
+                print("Stdout:", process.stdout)
+                print("Stderr:", process.stderr)
+                return jsonify({
+                    'message': f"Failed to extract cookies from {browser}",
+                    'status': False,
+                    'stdout': process.stdout,
+                    'stderr': process.stderr
+                }), 400
+            
+            if not validate_cookies_file(cookies_file):
+                return jsonify({
+                    'message': "Generated cookies file is invalid",
+                    'status': False,
+                    'stdout': process.stdout,
+                    'stderr': process.stderr
+                }), 400
                 
             return jsonify({
-                'message': f"Failed to extract cookies from {browser}. Make sure you have logged into YouTube on that browser.",
-                'status': False,
-                'stdout': process.stdout if 'process' in locals() else "No process output",
-                'stderr': process.stderr if 'process' in locals() else "No process error output",
-                'browser_logs': browser_logs,
+                'message': f"Successfully generated cookies file from {browser}",
+                'status': True,
+                'file_size': os.path.getsize(cookies_file),
                 'platform': sys.platform
+            }), 200
+            
+        except subprocess.TimeoutExpired:
+            return jsonify({
+                'message': "Extraction timed out. The browser profile might be locked or invalid.",
+                'status': False
             }), 400
             
-        return jsonify({
-            'message': f"Successfully generated cookies file from {browser}",
-            'status': True,
-            'file_size': os.path.getsize(cookies_file),
-            'platform': sys.platform
-        }), 200
-        
     except Exception as e:
         return jsonify({
             'message': f"Error generating cookies file: {str(e)}",
             'status': False,
-            'traceback': traceback.format_exc(),
-            'platform': sys.platform
+            'traceback': traceback.format_exc()
         }), 500
 
 @app.route('/check-cookies', methods=['GET'])
@@ -1065,14 +1022,14 @@ def download_via_rapidapi(video_id, input_path):
         return False
 
 def download_via_ytdlp(video_id, input_path, use_cookies=True):
-    """Download video using yt-dlp with improved cookie handling"""
+    """Download video using yt-dlp with improved error handling"""
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
         'outtmpl': input_path,
         'quiet': False,
         'no_warnings': False,
-        'retries': 10,
-        'fragment_retries': 10,
+        'retries': 3,
+        'fragment_retries': 3,
         'extractor_retries': 3,
         'ignoreerrors': False,
         'noprogress': True,
@@ -1094,23 +1051,21 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
             'Accept-Language': 'en-US,en;q=0.5',
             'Referer': 'https://www.youtube.com/'
         },
-        # Add these new options for better authentication handling
-        'cookiefile': COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
-        'extract_flat': False,
-        'mark_watched': False,
+        # Cookie handling
+        'cookiefile': COOKIES_FILE if (use_cookies and validate_cookies_file(COOKIES_FILE)) else None,
+        # Additional options for better reliability
         'throttled_rate': '100K',
         'sleep_interval': 5,
         'max_sleep_interval': 30,
         'force_ipv4': True,
         'geo_bypass': True,
-        'geo_bypass_country': 'US',
-        'geo_bypass_ip_block': None
+        'geo_bypass_country': 'US'
     }
     
     try:
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
         
-        # Try different URL formats with retries
+        # Try different URL formats
         url_variants = [
             f'https://www.youtube.com/watch?v={video_id}',
             f'https://www.youtube.com/embed/{video_id}',
@@ -1121,17 +1076,7 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
         for url in url_variants:
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    # Add retry handler
-                    for retry in range(3):
-                        try:
-                            ydl.download([url])
-                            break
-                        except yt_dlp.utils.DownloadError as e:
-                            if 'Sign in to confirm you\'re not a bot' in str(e) and retry < 2:
-                                print(f"Bot detection triggered, retrying ({retry + 1}/3)...")
-                                time.sleep(5 * (retry + 1))  # Exponential backoff
-                                continue
-                            raise
+                    ydl.download([url])
                 
                 # Verify the download
                 if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
@@ -1157,11 +1102,16 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
         return False
 
 def download_video(video_id, input_path):
-    """Attempt to download video using multiple methods"""
+    """Attempt to download video using multiple methods with priority"""
     methods = [
-        lambda: download_via_rapidapi(video_id, input_path),
+        # Try with cookies first
         lambda: download_via_ytdlp(video_id, input_path, use_cookies=True),
-        lambda: download_via_ytdlp(video_id, input_path, use_cookies=False)
+        # Try without cookies
+        lambda: download_via_ytdlp(video_id, input_path, use_cookies=False),
+        # Try RapidAPI
+        lambda: download_via_rapidapi(video_id, input_path),
+        # Try pytube fallback
+        lambda: download_via_pytube(video_id, input_path)
     ]
     
     last_error = None
@@ -1174,8 +1124,36 @@ def download_video(video_id, input_path):
             print(f"Download method failed: {str(e)}")
             continue
     
-    error_msg = str(last_error) if last_error else "All download methods failed without specific error"
+    error_msg = str(last_error) if last_error else "All download methods failed"
     raise Exception(f"All download methods failed: {error_msg}")
+
+def download_via_pytube(video_id, input_path):
+    """Fallback download method using pytube"""
+    try:
+        from pytube import YouTube
+        
+        yt = YouTube(f'https://www.youtube.com/watch?v={video_id}')
+        stream = yt.streams.filter(
+            progressive=True,
+            file_extension='mp4',
+            resolution='720p'
+        ).first()
+        
+        if not stream:
+            stream = yt.streams.filter(
+                progressive=True,
+                file_extension='mp4'
+            ).order_by('resolution').desc().first()
+        
+        if stream:
+            os.makedirs(os.path.dirname(input_path), exist_ok=True)
+            stream.download(output_path=os.path.dirname(input_path), filename=os.path.basename(input_path))
+            return True
+            
+        return False
+    except Exception as e:
+        print(f"Pytube download failed: {str(e)}")
+        return False
 
 def validate_and_refresh_cookies():
     """Ensure we have valid cookies and refresh them if needed"""
