@@ -984,11 +984,20 @@ def download_folder_status():
         }), 500
 
 def safe_ffmpeg_process(input_path, output_path, start_time, end_time):
-    """Helper function to safely process video clips with ffmpeg"""
-    # First try with copy codecs (fastest)
+    """Safely process video clips with ffmpeg, with fallback from stream copy to re-encoding"""
+    
+    # Validate input file before processing
+    if not os.path.exists(input_path):
+        raise Exception(f"FFmpeg error: input file does not exist - {input_path}")
+    if os.path.getsize(input_path) < 1024:  # < 1KB likely means broken/incomplete
+        raise Exception(f"FFmpeg error: input file is too small or corrupt - {input_path}")
+
+    ffmpeg_exec = ffmpeg_path if 'ffmpeg_path' in globals() and ffmpeg_path else 'ffmpeg'
+
+    # First attempt: stream copy (fastest)
     try:
         cmd = [
-            ffmpeg_path if ffmpeg_path else 'ffmpeg',
+            ffmpeg_exec,
             '-i', input_path,
             '-ss', str(start_time),
             '-to', str(end_time),
@@ -997,13 +1006,13 @@ def safe_ffmpeg_process(input_path, output_path, start_time, end_time):
         ]
         subprocess.run(cmd, check=True, capture_output=True)
         return True
-    except subprocess.CalledProcessError:
-        pass
-    
-    # If copy fails, try with re-encoding
+    except subprocess.CalledProcessError as e:
+        print(f"FFmpeg stream copy failed: {e.stderr.decode(errors='ignore')}")
+
+    # Second attempt: re-encode
     try:
         cmd = [
-            ffmpeg_path if ffmpeg_path else 'ffmpeg',
+            ffmpeg_exec,
             '-i', input_path,
             '-ss', str(start_time),
             '-to', str(end_time),
@@ -1017,9 +1026,10 @@ def safe_ffmpeg_process(input_path, output_path, start_time, end_time):
         subprocess.run(cmd, check=True, capture_output=True)
         return True
     except subprocess.CalledProcessError as e:
-        raise Exception(f"FFmpeg processing failed: {e.stderr.decode()}")
+        raise Exception(f"FFmpeg re-encode failed: {e.stderr.decode(errors='ignore')}")
     except Exception as e:
-        raise Exception(f"FFmpeg error: {str(e)}")
+        raise Exception(f"FFmpeg unexpected error: {str(e)}")
+
 
 def download_via_rapidapi(video_id, input_path):
     """Download video using RapidAPI"""
