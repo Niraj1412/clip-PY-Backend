@@ -1072,24 +1072,21 @@ def download_via_rapidapi(video_id, input_path):
         return False
 
 def download_via_ytdlp(video_id, input_path, use_cookies=True):
-    """Download video using yt-dlp with comprehensive fallback strategies"""
-    # Try multiple format quality combinations
+    """Download video using yt-dlp with comprehensive fallback strategies and validation"""
     format_combinations = [
-        'bestvideo[height<=720]+bestaudio/best[height<=720]',  # HD quality first
-        'best[height<=480]',  # Fallback to SD
-        'worst[ext=mp4]',  # Lowest quality as last resort
-        'bestvideo+bestaudio/best'  # Any quality if others fail
+        'bestvideo[height<=720]+bestaudio/best[height<=720]',
+        'best[height<=480]',
+        'worst[ext=mp4]',
+        'bestvideo+bestaudio/best'
     ]
-    
-    # Try different player clients
+
     player_clients = [
         ['android', 'web'],
         ['ios', 'web'],
         ['android'],
         ['web']
     ]
-    
-    # Try different URL formats
+
     url_variants = [
         f'https://www.youtube.com/watch?v={video_id}',
         f'https://youtu.be/{video_id}',
@@ -1104,8 +1101,8 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
         for clients in player_clients:
             for url in url_variants:
                 attempt_count += 1
-                print(f"Attempt {attempt_count}: format={format_str}, clients={clients}, url={url}")
-                
+                print(f"[Attempt {attempt_count}] format={format_str}, clients={clients}, url={url}")
+
                 ydl_opts = {
                     'format': format_str,
                     'outtmpl': input_path,
@@ -1120,10 +1117,7 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
                     'continuedl': False,
                     'nopart': True,
                     'windowsfilenames': sys.platform == 'win32',
-                    'paths': {
-                        'home': DOWNLOAD_DIR,
-                        'temp': TMP_DIR
-                    },
+                    'paths': {'home': DOWNLOAD_DIR, 'temp': TMP_DIR},
                     'extractor_args': {
                         'youtube': {
                             'skip': ['dash', 'hls'],
@@ -1151,61 +1145,62 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
                 }
 
                 try:
-                    # Ensure directory exists
                     os.makedirs(os.path.dirname(input_path), exist_ok=True)
-                    
+
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(url, download=True)
-                        
-                        # Verify download
+
+                        # Extra download validation
                         if not info.get('requested_downloads'):
-                            raise Exception("No downloads were requested")
-                    
+                            raise Exception("No downloads were requested or available")
+
+                    # Ensure file is valid and not empty
                     if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
-                        print(f"Successfully downloaded video to {input_path}")
+                        print(f"[SUCCESS] Downloaded to: {input_path}")
                         return True
-                    
+                    else:
+                        raise Exception("Downloaded file is invalid or too small")
+
                 except yt_dlp.utils.DownloadError as e:
                     if "Sign in to confirm you're not a bot" in str(e):
-                        if use_cookies:
-                            print("YouTube requires authentication - trying different approach...")
-                        else:
-                            print("Authentication required but cookies not available")
+                        print("[AUTH REQUIRED] YouTube requires login. Cookies may be missing or expired.")
+                    print(f"[ERROR] yt-dlp failed: {e}")
                     last_error = e
-                    print(f"Download attempt failed: {str(e)}")
-                    continue
-                except Exception as e:
-                    last_error = e
-                    print(f"Error during download: {str(e)}")
                     continue
 
-    # If all attempts failed, try emergency fallback
-    print("All standard attempts failed, trying emergency fallback...")
+                except Exception as e:
+                    print(f"[EXCEPTION] during download: {e}")
+                    last_error = e
+                    continue
+
+    # Emergency fallback logic (if implemented)
+    print("[FALLBACK] All standard attempts failed, trying emergency fallback...")
     try:
         if emergency_fallback_download(video_id, input_path):
             return True
     except Exception as e:
+        print(f"[FALLBACK ERROR]: {e}")
         last_error = e
 
-    # Final cleanup and error reporting
+    # Cleanup invalid files
     if os.path.exists(input_path):
         try:
             os.remove(input_path)
         except Exception:
             pass
 
+    # Final error message
     error_msg = "All download methods failed"
     if last_error:
         error_msg += f": {str(last_error)}"
-    
-    error_msg += "\nPossible solutions:\n"
-    error_msg += "1. Upload fresh cookies via /upload-cookies endpoint\n"
-    error_msg += "2. Try again later (YouTube might be rate-limiting)\n"
-    error_msg += "3. The video may be age-restricted or unavailable\n"
-    error_msg += "4. Check your network connection and firewall settings"
+
+    error_msg += "\nPossible fixes:\n"
+    error_msg += "1. Re-upload valid cookies via /upload-cookies\n"
+    error_msg += "2. Try again later (rate-limited)\n"
+    error_msg += "3. The video might be restricted or private\n"
+    error_msg += "4. Ensure internet access from the container/server\n"
 
     raise Exception(error_msg)
-
 
 def emergency_fallback_download(video_id, input_path):
     """Last-resort download methods when all else fails"""
