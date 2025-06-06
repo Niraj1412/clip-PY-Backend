@@ -271,7 +271,7 @@ def get_data(video_id):
 
         api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
         headers = {
-            'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',
+            'x-rapidapi-key': 'c58bbfe08bmsh4487c5af7cf106fp1fa8d9jsn95391a6d8a1f',
             'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com'
         }
 
@@ -1036,7 +1036,7 @@ def download_via_rapidapi(video_id, input_path):
     try:
         api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
         headers = {
-            'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',
+            'x-rapidapi-key': 'c58bbfe08bmsh4487c5af7cf106fp1fa8d9jsn95391a6d8a1f',
             'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com'
         }
         
@@ -1420,7 +1420,7 @@ def api_fallback_download(video_id, input_path):
             'name': 'RapidAPI',
             'url': f'https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}',
             'headers': {
-                'x-rapidapi-key': 'your-api-key',
+                'x-rapidapi-key': 'c58bbfe08bmsh4487c5af7cf106fp1fa8d9jsn95391a6d8a1f',
                 'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com'
             }
         },
@@ -1708,9 +1708,10 @@ def download_video_with_retries(video_id, output_path, max_attempts=3):
     raise Exception(f"All download methods failed after {max_attempts} attempts. Last error: {str(last_error)}")
 
 def download_via_ytdlp_with_cookies(video_id, output_path):
-    """Download using yt-dlp with cookies"""
+    """Download using yt-dlp with cookies for higher success rate"""
     if not validate_and_refresh_cookies():
-        raise ValueError("No valid cookies available")
+        print("Warning: No valid cookies available, falling back to without cookies")
+        return download_via_ytdlp_without_cookies(video_id, output_path)
     
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]',
@@ -1728,10 +1729,23 @@ def download_via_ytdlp_with_cookies(video_id, output_path):
         'no_check_certificate': True
     }
     
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
-    
-    return os.path.exists(output_path) and os.path.getsize(output_path) > 1024
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+        
+        # Validate download
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 1024:
+            raise ValueError("Downloaded file is invalid or too small")
+            
+        return True
+    except Exception as e:
+        print(f"Download with cookies failed: {str(e)}")
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except:
+                pass
+        return False
 
 
 # Updated cookie validation function
