@@ -1118,7 +1118,7 @@ def download_via_rapidapi(video_id, input_path):
         print(f"RapidAPI download failed: {str(e)}")
         return False
 
-def download_via_ytdlp(video_id, input_path, use_cookies=True):
+def download_via_ytdlp(video_id, input_path, use_cookies=False):
     """Download video using yt-dlp with comprehensive fallback strategies and validation"""
     format_combinations = [
         'bestvideo[height<=720]+bestaudio/best[height<=720]',
