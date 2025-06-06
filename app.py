@@ -61,29 +61,66 @@ def backup_cookies():
         return False
 
 def generate_youtube_cookies():
-    """Generate YouTube cookies from browser"""
+    """Generate YouTube cookies from browser with improved error handling"""
     try:
-        # Try different browsers
-        browsers = ['chrome', 'firefox', 'edge', 'brave']
-        for browser in browsers:
+        # Try different browsers with proper paths
+        browsers = [
+            ('chrome', None),
+            ('firefox', None),
+            ('edge', None),
+            ('brave', None),
+            # Add Flatpak paths for Linux
+            ('chrome', '~/.var/app/com.google.Chrome/config/google-chrome'),
+            ('firefox', '~/.var/app/org.mozilla.firefox/.mozilla/firefox'),
+            ('brave', '~/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser')
+        ]
+        
+        for browser, custom_path in browsers:
             try:
                 cmd = [
                     sys.executable, "-m", "yt_dlp",
-                    "--cookies-from-browser", browser,
+                    "--cookies-from-browser", 
+                    f"{browser}" + (f":{custom_path}" if custom_path else ""),
                     "--cookies", COOKIES_FILE,
                     "--skip-download",
+                    "--no-check-certificate",
                     "https://www.youtube.com"
                 ]
-                subprocess.run(cmd, check=True, timeout=60)
+                
+                # Set timeout based on platform
+                timeout = 120 if sys.platform == 'linux' else 60
+                
+                result = subprocess.run(
+                    cmd, 
+                    check=True, 
+                    timeout=timeout,
+                    capture_output=True,
+                    text=True
+                )
+                
+                # Validate the generated cookies file
                 if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+                    print(f"Successfully generated cookies from {browser}")
                     return True
-            except:
+                else:
+                    print(f"Generated cookies file is invalid from {browser}")
+                    print("Command output:", result.stdout)
+                    print("Command error:", result.stderr)
+                    
+            except subprocess.TimeoutExpired:
+                print(f"Timeout generating cookies from {browser}")
                 continue
+            except Exception as e:
+                print(f"Error generating cookies from {browser}: {str(e)}")
+                continue
+                
+        print("All cookie generation attempts failed")
         return False
+        
     except Exception as e:
-        print(f"Error generating cookies: {str(e)}")
+        print(f"Error in generate_youtube_cookies: {str(e)}")
         return False
-
+    
 def restore_cookies_backup():
     """Restore cookies from backup"""
     try:
