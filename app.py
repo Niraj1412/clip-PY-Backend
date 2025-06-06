@@ -1118,137 +1118,43 @@ def download_via_rapidapi(video_id, input_path):
         print(f"RapidAPI download failed: {str(e)}")
         return False
 
+# Update your yt-dlp download function to properly use cookies
 def download_via_ytdlp(video_id, input_path, use_cookies=False):
-    """Download video using yt-dlp with comprehensive fallback strategies and validation"""
-    format_combinations = [
-        'bestvideo[height<=720]+bestaudio/best[height<=720]',
-        'best[height<=480]',
-        'worst[ext=mp4]',
-        'bestvideo+bestaudio/best'
-    ]
-
-    player_clients = [
-        ['android', 'web'],
-        ['ios', 'web'],
-        ['android'],
-        ['web']
-    ]
-
-    url_variants = [
-        f'https://www.youtube.com/watch?v={video_id}',
-        f'https://youtu.be/{video_id}',
-        f'https://www.youtube.com/embed/{video_id}',
-        f'https://m.youtube.com/watch?v={video_id}'
-    ]
-
-    last_error = None
-    attempt_count = 0
-
-    for format_str in format_combinations:
-        for clients in player_clients:
-            for url in url_variants:
-                attempt_count += 1
-                print(f"[Attempt {attempt_count}] format={format_str}, clients={clients}, url={url}")
-
-                ydl_opts = {
-                    'format': format_str,
-                    'outtmpl': input_path,
-                    'quiet': False,
-                    'no_warnings': False,
-                    'retries': 3,
-                    'fragment_retries': 3,
-                    'extractor_retries': 3,
-                    'ignoreerrors': False,
-                    'noprogress': True,
-                    'nooverwrites': False,
-                    'continuedl': False,
-                    'nopart': True,
-                    'windowsfilenames': sys.platform == 'win32',
-                    'paths': {'home': DOWNLOAD_DIR, 'temp': TMP_DIR},
-                    'extractor_args': {
-                        'youtube': {
-                            'skip': ['dash', 'hls'],
-                            'player_client': clients
-                        }
-                    },
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Accept-Language': 'en-US,en;q=0.9',
-                        'Referer': 'https://www.youtube.com/',
-                        'Origin': 'https://www.youtube.com'
-                    },
-                    'cookiefile': COOKIES_FILE if (use_cookies and validate_cookies_file(COOKIES_FILE)) else None,
-                    'throttled_rate': '1M',
-                    'sleep_interval': 2,
-                    'max_sleep_interval': 10,
-                    'force_ipv4': True,
-                    'geo_bypass': True,
-                    'geo_bypass_country': 'US',
-                    'extract_flat': False,
-                    'concurrent_fragment_downloads': 3,
-                    'buffersize': '16M',
-                    'no_check_certificate': True,
-                    'verbose': True
-                }
-
-                try:
-                    os.makedirs(os.path.dirname(input_path), exist_ok=True)
-
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=True)
-
-                        # Extra download validation
-                        if not info.get('requested_downloads'):
-                            raise Exception("No downloads were requested or available")
-
-                    # Ensure file is valid and not empty
-                    if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
-                        print(f"[SUCCESS] Downloaded to: {input_path}")
-                        return True
-                    else:
-                        raise Exception("Downloaded file is invalid or too small")
-
-                except yt_dlp.utils.DownloadError as e:
-                    if "Sign in to confirm you're not a bot" in str(e):
-                        print("[AUTH REQUIRED] YouTube requires login. Cookies may be missing or expired.")
-                    print(f"[ERROR] yt-dlp failed: {e}")
-                    last_error = e
-                    continue
-
-                except Exception as e:
-                    print(f"[EXCEPTION] during download: {e}")
-                    last_error = e
-                    continue
-
-    # Emergency fallback logic (if implemented)
-    print("[FALLBACK] All standard attempts failed, trying emergency fallback...")
+    ydl_opts = {
+        'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
+        'outtmpl': input_path,
+        # Cookie configuration
+        'cookiefile': COOKIES_FILE if (use_cookies and os.path.exists(COOKIES_FILE)) else None,
+        # Important headers to mimic browser
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com'
+        },
+        # Additional recommended options
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],
+                'skip': ['dash', 'hls']
+            }
+        },
+        'retries': 10,
+        'fragment_retries': 10,
+        'extractor_retries': 3,
+        'ignoreerrors': False,
+        'no_check_certificate': True
+    }
+    
     try:
-        if emergency_fallback_download(video_id, input_path):
-            return True
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+        return os.path.exists(input_path)
     except Exception as e:
-        print(f"[FALLBACK ERROR]: {e}")
-        last_error = e
-
-    # Cleanup invalid files
-    if os.path.exists(input_path):
-        try:
-            os.remove(input_path)
-        except Exception:
-            pass
-
-    # Final error message
-    error_msg = "All download methods failed"
-    if last_error:
-        error_msg += f": {str(last_error)}"
-
-    error_msg += "\nPossible fixes:\n"
-    error_msg += "1. Re-upload valid cookies via /upload-cookies\n"
-    error_msg += "2. Try again later (rate-limited)\n"
-    error_msg += "3. The video might be restricted or private\n"
-    error_msg += "4. Ensure internet access from the container/server\n"
-
-    raise Exception(error_msg)
-
+        print(f"Download failed: {str(e)}")
+        return False
+    
+    
 def emergency_fallback_download(video_id, input_path):
     """Last-resort download methods when all else fails"""
     print("Attempting emergency fallback methods...")
