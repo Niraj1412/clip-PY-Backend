@@ -1563,7 +1563,109 @@ def download_via_ytdlp_with_embedded_cookies(video_id, input_path):
             except:
                 pass
         return False
+
+def download_fresh_cookies_file():
+    """Download a fresh cookies file from a secure source"""
+    try:
+        # This could be from an internal API, encrypted S3 bucket, etc.
+        # For security, you should implement this to get cookies from your secure source
+        
+        # Example implementation (replace with your actual secure source)
+        cookies_url = "https://your-secure-api.example.com/get_youtube_cookies"
+        response = requests.get(
+            cookies_url,
+            headers={'Authorization': f'Bearer {os.getenv("COOKIES_API_KEY")}'},
+            timeout=30
+        )
+        response.raise_for_status()
+        
+        # Save the cookies file
+        with open(COOKIES_FILE, 'wb') as f:
+            f.write(response.content)
+            
+        # Validate the downloaded cookies
+        if validate_cookies_file(COOKIES_FILE):
+            print("Successfully downloaded fresh cookies file")
+            return True
+        else:
+            print("Downloaded cookies file is invalid")
+            return False
+            
+    except Exception as e:
+        print(f"Error downloading fresh cookies: {str(e)}")
+        return False
+
+def download_via_ytdlp_without_cookies(video_id, input_path):
+    """Download video using yt-dlp without cookies"""
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]',
+        'outtmpl': input_path,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com'
+        },
+        'retries': 3,
+        'fragment_retries': 3,
+        'extractor_retries': 3,
+        'no_check_certificate': True,
+        'ignoreerrors': False,
+        'noprogress': True,
+        'nooverwrites': False,
+        'continuedl': False,
+        'nopart': True,
+        'windowsfilenames': sys.platform == 'win32',
+        'paths': {
+            'home': DOWNLOAD_DIR,
+            'temp': TMP_DIR
+        },
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web']
+            }
+        },
+        'throttled_rate': '1M',
+        'sleep_interval': 2,
+        'max_sleep_interval': 10,
+        'force_ipv4': True,
+        'geo_bypass': True,
+        'geo_bypass_country': 'US',
+        'extract_flat': False,
+        'concurrent_fragment_downloads': 3,
+        'buffersize': '16M'
+    }
     
+    try:
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
+            
+            if not info_dict.get('requested_downloads'):
+                raise Exception("No downloads were requested")
+        
+        if not os.path.exists(input_path):
+            raise Exception("Downloaded file not found")
+            
+        if os.path.getsize(input_path) < 1024:
+            raise Exception("Downloaded file is too small (possibly incomplete)")
+        
+        print(f"Successfully downloaded video to: {input_path}")
+        return True
+        
+    except Exception as e:
+        print(f"yt-dlp download without cookies failed: {str(e)}")
+        if os.path.exists(input_path):
+            try:
+                os.remove(input_path)
+            except:
+                pass
+        return False
+
+
+
+
     
 def download_video_with_retries(video_id, output_path, max_attempts=3):
     """Download video with multiple fallback methods and retries"""
