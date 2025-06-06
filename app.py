@@ -1193,6 +1193,7 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
                 print(f"Failed to clean up file {input_path}: {str(cleanup_error)}")
         return False
 
+# Updated download_video function with better cookie handling
 def download_video(video_id, input_path):
     """Attempt to download video using multiple methods with priority and enhanced cookie handling"""
     # Ensure download directory exists
@@ -1207,24 +1208,24 @@ def download_video(video_id, input_path):
             'retries': 2,
             'delay': 1
         },
-        # 2. Try yt-dlp without cookies
+        # 2. Try yt-dlp with embedded cookies (new method)
+        {
+            'name': 'yt-dlp with embedded cookies',
+            'function': lambda: download_via_ytdlp_with_embedded_cookies(video_id, input_path),
+            'retries': 1,
+            'delay': 1
+        },
+        # 3. Try yt-dlp without cookies
         {
             'name': 'yt-dlp without cookies',
             'function': lambda: download_via_ytdlp(video_id, input_path, use_cookies=False),
             'retries': 2,
             'delay': 1
         },
-        # 3. Try RapidAPI fallback
+        # 4. Try RapidAPI fallback
         {
             'name': 'RapidAPI',
             'function': lambda: download_via_rapidapi(video_id, input_path),
-            'retries': 1,
-            'delay': 0
-        },
-        # 4. Final fallback to pytube
-        {
-            'name': 'pytube',
-            'function': lambda: download_via_pytube(video_id, input_path),
             'retries': 1,
             'delay': 0
         }
@@ -1279,6 +1280,203 @@ def download_video(video_id, input_path):
         "3. Check your network connection\n"
         "4. Verify the video is available and not age-restricted"
     )
+
+# New function for downloading with embedded cookies
+def download_via_ytdlp_with_embedded_cookies(video_id, input_path):
+    """Download video using yt-dlp with embedded cookies in the request headers"""
+    # These are example cookies - you should replace them with valid ones
+    # or implement a way to get fresh cookies dynamically
+    embedded_cookies = {
+        'CONSENT': 'YES+cb.20220301-11-p0.en+FX+910',
+        'SOCS': 'CAISHAgCEhJnd3NfMjAyMzAzMDgtMF9SQzIaAmVuIAEaBgiA_LyuBg',
+        'PREF': 'tz=UTC&f6=40000000',
+        'YSC': 'DGVN2JXJQFE',
+        'VISITOR_INFO1_LIVE': 'k35Esl4JdfA'
+    }
+    
+    # Format cookies for headers
+    cookie_header = '; '.join([f'{k}={v}' for k, v in embedded_cookies.items()])
+    
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
+        'outtmpl': input_path,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com',
+            'Cookie': cookie_header
+        },
+        # Other options remain the same as in your original download_via_ytdlp
+        'quiet': False,
+        'no_warnings': False,
+        'retries': 3,
+        'fragment_retries': 3,
+        'extractor_retries': 3,
+        'ignoreerrors': False,
+        'noprogress': True,
+        'nooverwrites': False,
+        'continuedl': False,
+        'nopart': True,
+        'windowsfilenames': sys.platform == 'win32',
+        'paths': {
+            'home': DOWNLOAD_DIR,
+            'temp': TMP_DIR
+        },
+        'extractor_args': {
+            'youtube': {
+                'skip': ['dash', 'hls'],
+                'player_client': ['android', 'web']
+            }
+        },
+        'throttled_rate': '1M',
+        'sleep_interval': 2,
+        'max_sleep_interval': 10,
+        'force_ipv4': True,
+        'geo_bypass': True,
+        'geo_bypass_country': 'US',
+        'extract_flat': False,
+        'concurrent_fragment_downloads': 3,
+        'buffersize': '16M',
+        'no_check_certificate': True,
+        'verbose': True
+    }
+    
+    try:
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
+            
+            if not info_dict.get('requested_downloads'):
+                raise Exception("No downloads were requested")
+        
+        if not os.path.exists(input_path):
+            raise Exception("Downloaded file not found")
+            
+        if os.path.getsize(input_path) < 1024:
+            raise Exception("Downloaded file is too small (possibly incomplete)")
+        
+        print(f"Successfully downloaded video to: {input_path}")
+        return True
+        
+    except Exception as e:
+        print(f"yt-dlp download with embedded cookies failed: {str(e)}")
+        if os.path.exists(input_path):
+            try:
+                os.remove(input_path)
+            except:
+                pass
+        return False
+
+# Updated cookie validation function
+def validate_and_refresh_cookies():
+    """Ensure we have valid cookies and refresh them if needed"""
+    # First try to use existing cookies if they exist
+    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+        print("Found existing cookies file, validating...")
+        try:
+            # Test the cookies with a simple request
+            test_cmd = [
+                sys.executable, "-m", "yt_dlp",
+                "--cookies", COOKIES_FILE,
+                "--skip-download",
+                "--print", "%(title)s",
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            ]
+            result = subprocess.run(
+                test_cmd,
+                timeout=30,
+                capture_output=True,
+                text=True
+            )
+            
+            if "Sign in to confirm you're not a bot" not in result.stderr:
+                print("Existing cookies are still valid")
+                return True
+        except Exception as e:
+            print(f"Error validating existing cookies: {str(e)}")
+    
+    print("No valid cookies found, attempting to generate new ones...")
+    
+    # Try different methods to get cookies
+    cookie_sources = [
+        # 1. Try to extract from any available browser
+        lambda: generate_cookies_from_browser(),
+        # 2. Try to use embedded cookies as fallback
+        lambda: generate_embedded_cookies_file(),
+        # 3. Try to download a fresh cookies file from a secure source
+        lambda: download_fresh_cookies_file()
+    ]
+    
+    for source in cookie_sources:
+        try:
+            if source():
+                print("Successfully generated new cookies")
+                return True
+        except Exception as e:
+            print(f"Cookie generation attempt failed: {str(e)}")
+            continue
+    
+    print("All cookie generation methods failed")
+    return False
+
+def generate_cookies_from_browser():
+    """Try to generate cookies from any available browser"""
+    browsers = ['chrome', 'firefox', 'edge', 'brave']
+    for browser in browsers:
+        try:
+            print(f"Attempting to generate cookies from {browser}...")
+            cmd = [
+                sys.executable, "-m", "yt_dlp",
+                "--cookies-from-browser", browser,
+                "--cookies", COOKIES_FILE,
+                "--skip-download",
+                "--no-check-certificate",
+                "https://www.youtube.com"
+            ]
+            result = subprocess.run(
+                cmd, 
+                check=True, 
+                timeout=60,
+                capture_output=True,
+                text=True
+            )
+            
+            if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+                print(f"Successfully generated cookies from {browser}")
+                return True
+        except subprocess.TimeoutExpired:
+            print(f"Timeout generating cookies from {browser}")
+            continue
+        except Exception as e:
+            print(f"Error generating cookies from {browser}: {str(e)}")
+            continue
+    return False
+
+def generate_embedded_cookies_file():
+    """Generate a cookies file with embedded cookies"""
+    embedded_cookies = """# Netscape HTTP Cookie File
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tCONSENT\tYES+cb.20220301-11-p0.en+FX+910
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSOCS\tCAISHAgCEhJnd3NfMjAyMzAzMDgtMF9SQzIaAmVuIAEaBgiA_LyuBg
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tPREF\ttz=UTC&f6=40000000
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tYSC\tDGVN2JXJQFE
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tVISITOR_INFO1_LIVE\tk35Esl4JdfA
+"""
+    try:
+        with open(COOKIES_FILE, 'w', encoding='utf-8') as f:
+            f.write(embedded_cookies)
+        return True
+    except Exception as e:
+        print(f"Error writing embedded cookies: {str(e)}")
+        return False
+
+def download_fresh_cookies_file():
+    """Download a fresh cookies file from a secure source"""
+    # This would be your implementation to get cookies from a secure storage
+    # For example, from an S3 bucket or encrypted database
+    # Replace this with your actual implementation
+    return False
 
 def download_via_pytube(video_id, input_path):
     """Fallback download method using pytube"""
