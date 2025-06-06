@@ -29,7 +29,7 @@ app = Flask(__name__)
 
 # AWS S3 Configuration
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
-AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID' )
+AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_S3_BUCKET = os.getenv('AWS_S3_BUCKET', 'clipsmart')
 
@@ -40,6 +40,98 @@ s3_client = boto3.client(
     aws_access_key_id=AWS_ACCESS_KEY_ID,
     aws_secret_access_key=AWS_SECRET_ACCESS_KEY
 )
+
+# Cookie configuration
+BASE_DIR = '/app' if os.path.exists('/app') else os.path.dirname(os.path.abspath(__file__))
+COOKIES_FILE = os.path.join(BASE_DIR, 'youtube_cookies.txt')
+VALID_COOKIE_HEADERS = [
+    '# HTTP Cookie File',
+    '# Netscape HTTP Cookie File'
+]
+
+def backup_cookies():
+    """Create a backup of the cookies file"""
+    try:
+        if os.path.exists(COOKIES_FILE):
+            shutil.copy2(COOKIES_FILE, COOKIES_BACKUP_FILE)
+            return True
+        return False
+    except Exception as e:
+        print(f"Error backing up cookies: {str(e)}")
+        return False
+
+def generate_youtube_cookies():
+    """Generate YouTube cookies from browser"""
+    try:
+        # Try different browsers
+        browsers = ['chrome', 'firefox', 'edge', 'brave']
+        for browser in browsers:
+            try:
+                cmd = [
+                    sys.executable, "-m", "yt_dlp",
+                    "--cookies-from-browser", browser,
+                    "--cookies", COOKIES_FILE,
+                    "--skip-download",
+                    "https://www.youtube.com"
+                ]
+                subprocess.run(cmd, check=True, timeout=60)
+                if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+                    return True
+            except:
+                continue
+        return False
+    except Exception as e:
+        print(f"Error generating cookies: {str(e)}")
+        return False
+
+def restore_cookies_backup():
+    """Restore cookies from backup"""
+    try:
+        if os.path.exists(COOKIES_BACKUP_FILE):
+            shutil.copy2(COOKIES_BACKUP_FILE, COOKIES_FILE)
+            return True
+        return False
+    except Exception as e:
+        print(f"Error restoring cookies backup: {str(e)}")
+        return False
+
+def validate_cookies_file(cookies_path):
+    """Validate the cookies file format and size with more robust checks"""
+    if not os.path.exists(cookies_path):
+        print(f"Cookies file not found at {cookies_path}")
+        return False
+    
+    file_size = os.path.getsize(cookies_path)
+    if file_size < 100:
+        print(f"Cookies file is too small ({file_size} bytes)")
+        return False
+    
+    try:
+        with open(cookies_path, 'r', encoding='utf-8') as f:
+            first_line = f.readline().strip()
+            
+            # Check for Netscape format header
+            if not any(first_line.startswith(valid) for valid in VALID_COOKIE_HEADERS):
+                print(f"Invalid cookies file header: {first_line}")
+                return False
+            
+            # Check for at least one valid cookie line
+            valid_cookies = 0
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    parts = line.split('\t')
+                    if len(parts) >= 7:
+                        valid_cookies += 1
+            
+            if valid_cookies == 0:
+                print("No valid cookie entries found in file")
+                return False
+                
+            return True
+    except Exception as e:
+        print(f"Error reading cookies file: {str(e)}")
+        return False
 
 # Check if ffmpeg is available
 def check_ffmpeg_availability():
@@ -52,9 +144,8 @@ def check_ffmpeg_availability():
         # On Windows, try checking common installation locations
         if sys.platform == 'win32':
             common_paths = [
-                 str(Path(__file__).parent / "ffmpeg" / "bin" / "ffmpeg.exe"),
+                str(Path(__file__).parent / "ffmpeg" / "bin" / "ffmpeg.exe"),
                 str(Path(__file__).parent.parent / "ffmpeg" / "bin" / "ffmpeg.exe"),
-                
                 r"C:\Users\14nir\Downloads\ffmpeg-2025-04-23-git-25b0a8e295-full_build\ffmpeg-2025-04-23-git-25b0a8e295-full_build\bin\ffmpeg.exe",
                 r"C:\Users\14nir\Downloads\ffmpeg-2025-04-23-git-25b0a8e295-full_build\bin\ffmpeg.exe",
                 r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
@@ -91,13 +182,10 @@ else:
     print(f"Found ffmpeg at: {ffmpeg_path}")
 
 # Create necessary directories
-# Determine if we're in development or EC2 environment
 if os.path.exists('/app'):
-    # We're likely in EC2/container environment
     BASE_DIR = '/app'
     print("Running in EC2/container environment with base directory: /app")
 else:
-    # Regular development environment
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     print(f"Running in development environment with base directory: {BASE_DIR}")
 
@@ -108,7 +196,6 @@ TMP_DIR = os.path.join(BASE_DIR, 'tmp')
 for directory in [DOWNLOAD_DIR, TMP_DIR]:
     try:
         os.makedirs(directory, exist_ok=True)
-        # Make sure the directory is writable
         if not os.access(directory, os.W_OK):
             try:
                 os.chmod(directory, 0o755)
@@ -119,29 +206,10 @@ for directory in [DOWNLOAD_DIR, TMP_DIR]:
     except Exception as e:
         print(f"ERROR: Failed to create or access directory {directory}: {str(e)}")
 
-# Check if we can actually write to these directories
-try:
-    test_file_path = os.path.join(DOWNLOAD_DIR, 'test_write.txt')
-    with open(test_file_path, 'w') as f:
-        f.write('Test write access')
-    os.remove(test_file_path)
-    print(f"Write test successful for {DOWNLOAD_DIR}")
-except Exception as e:
-    print(f"WARNING: Cannot write to {DOWNLOAD_DIR}: {str(e)}")
-
-try:
-    test_file_path = os.path.join(TMP_DIR, 'test_write.txt')
-    with open(test_file_path, 'w') as f:
-        f.write('Test write access')
-    os.remove(test_file_path)
-    print(f"Write test successful for {TMP_DIR}")
-except Exception as e:
-    print(f"WARNING: Cannot write to {TMP_DIR}: {str(e)}")
-
-# Configure CORS to allow all origins and common headers
+# Configure CORS
 CORS(app, resources={
     r"/*": {
-        "origins": "*",  # Allow all origins
+        "origins": "*",
         "methods": ["GET", "POST", "OPTIONS", "HEAD"],
         "allow_headers": ["Content-Type", "Authorization", "Access-Control-Allow-Origin",
                          "Access-Control-Allow-Headers", "Origin", "Accept", "X-Requested-With"],
@@ -203,7 +271,7 @@ def get_data(video_id):
 
         api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
         headers = {
-            'x-rapidapi-key': 'c58bbfe08bmsh4487c5af7cf106fp1fa8d9jsn95391a6d8a1f',
+            'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',
             'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com'
         }
 
@@ -408,141 +476,75 @@ def upload_cookies():
 
 @app.route('/generate-cookies', methods=['GET'])
 def generate_cookies():
-    """
-    Generate a cookies file from the user's browser.
-    Query parameters:
-    - browser: The browser to extract cookies from (chrome, firefox, edge, etc.)
-    - custom_path: Optional path to browser profile
-    """
+    """Generate a cookies file from the user's browser"""
     try:
         browser = request.args.get('browser', 'chrome')
         custom_path = request.args.get('custom_path', None)
         
         cookies_file = os.path.join(BASE_DIR, 'youtube_cookies.txt')
         
-        # First check if we have a custom browser path saved
-        browser_config_file = os.path.join(BASE_DIR, 'browser_paths.json')
-        if os.path.exists(browser_config_file) and not custom_path:
-            try:
-                with open(browser_config_file, 'r') as f:
-                    browser_paths = json.load(f)
-                    if browser in browser_paths and os.path.exists(browser_paths[browser]):
-                        custom_path = browser_paths[browser]
-                        print(f"Using saved browser path for {browser}: {custom_path}")
-            except Exception as e:
-                print(f"Error loading browser paths: {str(e)}")
-                # Continue without saved paths
+        # Remove existing cookies file if it exists
+        if os.path.exists(cookies_file):
+            os.remove(cookies_file)
         
-        # Define platform-specific browser profile paths
-        platform_paths = {
-            'win32': {
-                'chrome': os.path.expanduser('~\\AppData\\Local\\Google\\Chrome\\User Data'),
-                'firefox': os.path.expanduser('~\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles'),
-                'edge': os.path.expanduser('~\\AppData\\Local\\Microsoft\\Edge\\User Data'),
-                'brave': os.path.expanduser('~\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data'),
-            },
-            'linux': {
-                'chrome': os.path.expanduser('~/.config/google-chrome'),
-                'chrome-flatpak': os.path.expanduser('~/.var/app/com.google.Chrome/config/google-chrome'),
-                'firefox': os.path.expanduser('~/.mozilla/firefox'),
-                'brave': os.path.expanduser('~/.config/BraveSoftware/Brave-Browser'),
-            },
-            'darwin': {  # macOS
-                'chrome': os.path.expanduser('~/Library/Application Support/Google/Chrome'),
-                'firefox': os.path.expanduser('~/Library/Application Support/Firefox/Profiles'),
-                'safari': os.path.expanduser('~/Library/Safari'),
-                'brave': os.path.expanduser('~/Library/Application Support/BraveSoftware/Brave-Browser'),
-            }
-        }
-        
-        # If custom_path is not provided but we have a default for this platform/browser
-        if not custom_path and sys.platform in platform_paths:
-            # Check if it's a special case like chrome-flatpak
-            if browser in platform_paths[sys.platform]:
-                default_path = platform_paths[sys.platform][browser]
-                print(f"Using default {browser} profile path for {sys.platform}: {default_path}")
-                
-                # Only use the default path if it exists
-                if os.path.exists(default_path):
-                    custom_path = default_path
-                    print(f"Default path exists, will use it")
-                else:
-                    print(f"Default path doesn't exist, continuing without it")
-        
-        # Construct the command
+        # Construct the command with proper Netscape format
         extract_cmd = [
             sys.executable, "-m", "yt_dlp", 
-            "--cookies-from-browser"
+            "--cookies-from-browser", f"{browser}" + (f":{custom_path}" if custom_path else ""),
+            "--cookies", cookies_file,
+            "--skip-download",
+            "--no-check-certificate",
+            "--print", "requested_downloads",
+            "https://www.youtube.com"
         ]
         
-        # Add browser name and optional path
-        if custom_path:
-            extract_cmd.append(f"{browser}:{custom_path}")
-        else:
-            extract_cmd.append(browser)
-            
-        # Add remaining arguments
-        extract_cmd.extend([
-            "--cookies", cookies_file,
-            "-f", "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]",
-            "--print", "requested_downloads",
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Use a popular video to test
-        ])
-        
-        # Run the command
-        print(f"Extracting cookies from {browser} browser with command: {' '.join(extract_cmd)}")
+        print(f"Extracting cookies with command: {' '.join(extract_cmd)}")
         
         try:
-            process = subprocess.run(extract_cmd, capture_output=True, text=True, timeout=30)
-            print(f"Command output: {process.stdout}")
-            print(f"Command errors: {process.stderr}")
-        except subprocess.TimeoutExpired:
-            print("Command timed out after 30 seconds")
-            return jsonify({
-                'message': f"Extraction timed out. The browser profile might be locked or invalid.",
-                'status': False,
-                'command': ' '.join(extract_cmd)
-            }), 400
-        
-        # Check if cookies file was created successfully
-        if not os.path.exists(cookies_file) or os.path.getsize(cookies_file) < 100:
-            # Try to create a log of all available browsers for diagnostic purposes
-            browser_logs = []
-            try:
-                if sys.platform == 'win32':
-                    # On Windows, list common browser profile locations
-                    for browser_name, path in platform_paths['win32'].items():
-                        browser_logs.append(f"{browser_name}: {'Exists' if os.path.exists(path) else 'Not found'} - {path}")
-                else:
-                    # On Linux/Mac, use a command to find browsers
-                    find_cmd = ["which", "google-chrome", "firefox", "brave-browser", "chromium-browser"]
-                    result = subprocess.run(find_cmd, capture_output=True, text=True)
-                    browser_logs.append(f"Found browsers: {result.stdout}")
-            except Exception as e:
-                browser_logs.append(f"Error checking browsers: {str(e)}")
+            process = subprocess.run(
+                extract_cmd, 
+                capture_output=True, 
+                text=True, 
+                timeout=60
+            )
+            
+            if process.returncode != 0:
+                print(f"Cookie extraction failed with return code {process.returncode}")
+                print("Stdout:", process.stdout)
+                print("Stderr:", process.stderr)
+                return jsonify({
+                    'message': f"Failed to extract cookies from {browser}",
+                    'status': False,
+                    'stdout': process.stdout,
+                    'stderr': process.stderr
+                }), 400
+            
+            if not validate_cookies_file(cookies_file):
+                return jsonify({
+                    'message': "Generated cookies file is invalid",
+                    'status': False,
+                    'stdout': process.stdout,
+                    'stderr': process.stderr
+                }), 400
                 
             return jsonify({
-                'message': f"Failed to extract cookies from {browser}. Make sure you have logged into YouTube on that browser.",
-                'status': False,
-                'stdout': process.stdout if 'process' in locals() else "No process output",
-                'stderr': process.stderr if 'process' in locals() else "No process error output",
-                'browser_logs': browser_logs,
+                'message': f"Successfully generated cookies file from {browser}",
+                'status': True,
+                'file_size': os.path.getsize(cookies_file),
                 'platform': sys.platform
+            }), 200
+            
+        except subprocess.TimeoutExpired:
+            return jsonify({
+                'message': "Extraction timed out. The browser profile might be locked or invalid.",
+                'status': False
             }), 400
             
-        return jsonify({
-            'message': f"Successfully generated cookies file from {browser}",
-            'status': True,
-            'file_size': os.path.getsize(cookies_file),
-            'platform': sys.platform
-        }), 200
-        
     except Exception as e:
         return jsonify({
             'message': f"Error generating cookies file: {str(e)}",
             'status': False,
-            'traceback': traceback.format_exc(),
-            'platform': sys.platform
+            'traceback': traceback.format_exc()
         }), 500
 
 @app.route('/check-cookies', methods=['GET'])
@@ -981,603 +983,1044 @@ def download_folder_status():
             'traceback': traceback.format_exc()
         }), 500
 
+def safe_ffmpeg_process(input_path, output_path, start_time, end_time):
+    """Helper function to safely process video clips with ffmpeg"""
+    # First try with copy codecs (fastest)
+    try:
+        cmd = [
+            ffmpeg_path if ffmpeg_path else 'ffmpeg',
+            '-i', input_path,
+            '-ss', str(start_time),
+            '-to', str(end_time),
+            '-c', 'copy',
+            '-y', output_path
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        return True
+    except subprocess.CalledProcessError:
+        pass
+    
+    # If copy fails, try with re-encoding
+    try:
+        cmd = [
+            ffmpeg_path if ffmpeg_path else 'ffmpeg',
+            '-i', input_path,
+            '-ss', str(start_time),
+            '-to', str(end_time),
+            '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-crf', '23',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-y', output_path
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        raise Exception(f"FFmpeg processing failed: {e.stderr.decode()}")
+    except Exception as e:
+        raise Exception(f"FFmpeg error: {str(e)}")
+
+def download_via_rapidapi(video_id, input_path):
+    """Download video using RapidAPI"""
+    try:
+        api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
+        headers = {
+            'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',
+            'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com'
+        }
+        
+        response = requests.get(api_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        
+        adaptive_formats = result.get('adaptiveFormats', [])
+        formats = result.get('formats', [])
+        
+        if (not adaptive_formats or not isinstance(adaptive_formats, list)) and (not formats or not isinstance(formats, list)):
+            raise ValueError(f"No valid formats found via RapidAPI for video {video_id}")
+        
+        download_url = None
+        for format_list in [formats, adaptive_formats]:
+            for format_item in format_list:
+                if format_item.get('url'):
+                    download_url = format_item.get('url')
+                    print(f"Using RapidAPI format: {format_item.get('qualityLabel', 'unknown quality')}")
+                    break
+            if download_url:
+                break
+        
+        if not download_url:
+            raise ValueError(f"No valid download URL found via RapidAPI for video {video_id}")
+
+        print(f"Downloading video to path: {input_path}")
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
+        
+        download_response = requests.get(download_url, timeout=90)
+        download_response.raise_for_status()
+        video_content = download_response.content
+        
+        if len(video_content) < 1024:
+            raise ValueError("Downloaded file via RapidAPI is too small or empty")
+
+        with open(input_path, 'wb') as f:
+            f.write(video_content)
+            
+        return True
+    except Exception as e:
+        print(f"RapidAPI download failed: {str(e)}")
+        return False
+
+def download_via_ytdlp(video_id, input_path, use_cookies=True):
+    """Download video using yt-dlp with comprehensive fallback strategies"""
+    # Try multiple format quality combinations
+    format_combinations = [
+        'bestvideo[height<=720]+bestaudio/best[height<=720]',  # HD quality first
+        'best[height<=480]',  # Fallback to SD
+        'worst[ext=mp4]',  # Lowest quality as last resort
+        'bestvideo+bestaudio/best'  # Any quality if others fail
+    ]
+    
+    # Try different player clients
+    player_clients = [
+        ['android', 'web'],
+        ['ios', 'web'],
+        ['android'],
+        ['web']
+    ]
+    
+    # Try different URL formats
+    url_variants = [
+        f'https://www.youtube.com/watch?v={video_id}',
+        f'https://youtu.be/{video_id}',
+        f'https://www.youtube.com/embed/{video_id}',
+        f'https://m.youtube.com/watch?v={video_id}'
+    ]
+
+    last_error = None
+    attempt_count = 0
+
+    for format_str in format_combinations:
+        for clients in player_clients:
+            for url in url_variants:
+                attempt_count += 1
+                print(f"Attempt {attempt_count}: format={format_str}, clients={clients}, url={url}")
+                
+                ydl_opts = {
+                    'format': format_str,
+                    'outtmpl': input_path,
+                    'quiet': False,
+                    'no_warnings': False,
+                    'retries': 3,
+                    'fragment_retries': 3,
+                    'extractor_retries': 3,
+                    'ignoreerrors': False,
+                    'noprogress': True,
+                    'nooverwrites': False,
+                    'continuedl': False,
+                    'nopart': True,
+                    'windowsfilenames': sys.platform == 'win32',
+                    'paths': {
+                        'home': DOWNLOAD_DIR,
+                        'temp': TMP_DIR
+                    },
+                    'extractor_args': {
+                        'youtube': {
+                            'skip': ['dash', 'hls'],
+                            'player_client': clients
+                        }
+                    },
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Referer': 'https://www.youtube.com/',
+                        'Origin': 'https://www.youtube.com'
+                    },
+                    'cookiefile': COOKIES_FILE if (use_cookies and validate_cookies_file(COOKIES_FILE)) else None,
+                    'throttled_rate': '1M',
+                    'sleep_interval': 2,
+                    'max_sleep_interval': 10,
+                    'force_ipv4': True,
+                    'geo_bypass': True,
+                    'geo_bypass_country': 'US',
+                    'extract_flat': False,
+                    'concurrent_fragment_downloads': 3,
+                    'buffersize': '16M',
+                    'no_check_certificate': True,
+                    'verbose': True
+                }
+
+                try:
+                    # Ensure directory exists
+                    os.makedirs(os.path.dirname(input_path), exist_ok=True)
+                    
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                        
+                        # Verify download
+                        if not info.get('requested_downloads'):
+                            raise Exception("No downloads were requested")
+                    
+                    if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
+                        print(f"Successfully downloaded video to {input_path}")
+                        return True
+                    
+                except yt_dlp.utils.DownloadError as e:
+                    if "Sign in to confirm you're not a bot" in str(e):
+                        if use_cookies:
+                            print("YouTube requires authentication - trying different approach...")
+                        else:
+                            print("Authentication required but cookies not available")
+                    last_error = e
+                    print(f"Download attempt failed: {str(e)}")
+                    continue
+                except Exception as e:
+                    last_error = e
+                    print(f"Error during download: {str(e)}")
+                    continue
+
+    # If all attempts failed, try emergency fallback
+    print("All standard attempts failed, trying emergency fallback...")
+    try:
+        if emergency_fallback_download(video_id, input_path):
+            return True
+    except Exception as e:
+        last_error = e
+
+    # Final cleanup and error reporting
+    if os.path.exists(input_path):
+        try:
+            os.remove(input_path)
+        except Exception:
+            pass
+
+    error_msg = "All download methods failed"
+    if last_error:
+        error_msg += f": {str(last_error)}"
+    
+    error_msg += "\nPossible solutions:\n"
+    error_msg += "1. Upload fresh cookies via /upload-cookies endpoint\n"
+    error_msg += "2. Try again later (YouTube might be rate-limiting)\n"
+    error_msg += "3. The video may be age-restricted or unavailable\n"
+    error_msg += "4. Check your network connection and firewall settings"
+
+    raise Exception(error_msg)
+
+
+def emergency_fallback_download(video_id, input_path):
+    """Last-resort download methods when all else fails"""
+    print("Attempting emergency fallback methods...")
+    
+    # Method 1: Try through proxy
+    try:
+        proxy_services = [
+            f"https://youtube-proxy.example.com/download?id={video_id}",
+            f"https://api.r4pidapi.net/youtube?id={video_id}",
+            f"https://loader.to/api/download/?url=https://youtube.com/watch?v={video_id}"
+        ]
+        
+        for proxy_url in proxy_services:
+            try:
+                print(f"Trying proxy service: {proxy_url}")
+                response = requests.get(proxy_url, timeout=30)
+                if response.status_code == 200:
+                    with open(input_path, 'wb') as f:
+                        f.write(response.content)
+                    if os.path.getsize(input_path) > 1024:
+                        return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    
+    # Method 2: Try alternative extractors
+    try:
+        ydl_opts = {
+            'format': 'worst[ext=mp4]',
+            'outtmpl': input_path,
+            'quiet': True,
+            'force_generic_extractor': True,
+            'extractor_args': {
+                'youtube': {
+                    'skip': [],
+                    'player_client': ['android', 'web', 'ios']
+                }
+            }
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f'https://youtu.be/{video_id}'])
+        if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
+            return True
+    except Exception:
+        pass
+    
+    # Method 3: Try direct download
+    try:
+        direct_url = f"https://www.youtube.com/watch?v={video_id}"
+        cmd = [
+            'wget',
+            '-O', input_path,
+            direct_url
+        ]
+        subprocess.run(cmd, check=True, timeout=60)
+        return os.path.exists(input_path) and os.path.getsize(input_path) > 1024
+    except Exception:
+        pass
+    
+    return False
+
+
+def download_video(video_id, input_path):
+    """Main download function with comprehensive retry logic"""
+    max_attempts = 3
+    wait_times = [2, 5, 10]  # Seconds to wait between attempts
+    
+    for attempt in range(max_attempts):
+        try:
+            # First try with cookies
+            if validate_cookies_file(COOKIES_FILE):
+                if download_via_ytdlp(video_id, input_path, use_cookies=True):
+                    return True
+            
+            # Then try without cookies
+            if download_via_ytdlp(video_id, input_path, use_cookies=False):
+                return True
+            
+            # Then try RapidAPI
+            if download_via_rapidapi(video_id, input_path):
+                return True
+            
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed: {str(e)}")
+            if attempt < max_attempts - 1:
+                wait = wait_times[attempt]
+                print(f"Waiting {wait} seconds before retrying...")
+                time.sleep(wait)
+            continue
+    
+    raise Exception(f"Failed to download video after {max_attempts} attempts")
+
+def premium_download(video_id, input_path):
+    """Highest success rate method using premium cookies"""
+    premium_cookies = get_premium_cookies()  # Implement this to get fresh cookies
+    
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+        'outtmpl': input_path,
+        'cookiefile': premium_cookies,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com'
+        },
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],
+                'skip': ['hls', 'dash']
+            }
+        },
+        'retries': 10,
+        'fragment_retries': 10,
+        'extractor_retries': 3,
+        'quiet': True
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+        return os.path.exists(input_path)
+    except:
+        return False
+
+def proxy_download(video_id, input_path):
+    """Use rotating residential proxies to avoid detection"""
+    proxies = get_fresh_proxies()  # Implement proxy rotation
+    
+    ydl_opts = {
+        'format': 'worst[ext=mp4]',  # Lower quality less likely to trigger blocks
+        'outtmpl': input_path,
+        'proxy': proxies[0]['url'],
+        'http_headers': {
+            'User-Agent': proxies[0]['user_agent'],
+            'Accept-Language': 'en-US,en;q=0.5',
+            'X-Forwarded-For': proxies[0]['ip']
+        },
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['tv_embedded', 'web']
+            }
+        },
+        'retries': 5,
+        'sleep_interval': 5,
+        'max_sleep_interval': 30,
+        'ignoreerrors': True
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+        return os.path.exists(input_path)
+    except:
+        return False
+
+def embedded_cookies_download(video_id, input_path):
+    """Use hardcoded cookies that get periodically updated"""
+    cookies = """# Netscape HTTP Cookie File
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tCONSENT\tYES+cb.20250101-11-p0.en+FX+999
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tPREF\tf6=40000000&tz=UTC
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tVISITOR_INFO1_LIVE\tCg9JZ3FfV2hITE1jZw%3D%3D
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tYSC\tDGVN2JXJQFE
+"""
+    
+    cookie_file = f'/tmp/yt_cookies_{video_id}.txt'
+    with open(cookie_file, 'w') as f:
+        f.write(cookies)
+    
+    ydl_opts = {
+        'format': 'best[height<=480]',
+        'outtmpl': input_path,
+        'cookiefile': cookie_file,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com',
+            'X-YouTube-Client-Name': '1',
+            'X-YouTube-Client-Version': '2.20250101.00.00'
+        },
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web']
+            }
+        },
+        'retries': 3,
+        'ignoreerrors': True
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+        return os.path.exists(input_path)
+    finally:
+        try:
+            os.remove(cookie_file)
+        except:
+            pass
+
+def api_fallback_download(video_id, input_path):
+    """Fallback to paid API services"""
+    apis = [
+        {
+            'name': 'RapidAPI',
+            'url': f'https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}',
+            'headers': {
+                'x-rapidapi-key': 'your-api-key',
+                'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com'
+            }
+        },
+        {
+            'name': 'YouTubeDL API',
+            'url': 'https://api.yt-dlp.org/download',
+            'params': {
+                'url': f'https://www.youtube.com/watch?v={video_id}',
+                'format': 'mp4'
+            }
+        }
+    ]
+    
+    for api in apis:
+        try:
+            response = requests.get(
+                api['url'],
+                headers=api.get('headers', {}),
+                params=api.get('params', {}),
+                timeout=30
+            )
+            response.raise_for_status()
+            
+            with open(input_path, 'wb') as f:
+                f.write(response.content)
+                
+            if os.path.getsize(input_path) > 1024:
+                return True
+        except Exception as e:
+            print(f"API {api['name']} failed: {str(e)}")
+            continue
+    
+    return False
+
+def get_premium_cookies():
+    """Get fresh premium cookies from secure storage"""
+    # Implement this to get cookies from:
+    # - Encrypted S3 bucket
+    # - Database
+    # - Cookie generation service
+    return '/path/to/fresh_cookies.txt'
+
+def get_fresh_proxies():
+    """Get rotating residential proxies"""
+    # Implement proxy rotation from:
+    # - Luminati
+    # - Smartproxy
+    # - Oxylabs
+    return [
+        {
+            'url': 'http://user:pass@proxy1.com:8000',
+            'ip': '192.168.1.1',
+            'user_agent': 'Mozilla/5.0...'
+        }
+    ]
+# New function for downloading with embedded cookies
+def download_via_ytdlp_with_embedded_cookies(video_id, input_path):
+    """Download video using yt-dlp with embedded cookies in the request headers"""
+    # These are example cookies - you should replace them with valid ones
+    # or implement a way to get fresh cookies dynamically
+    embedded_cookies = {
+        'CONSENT': 'YES+cb.20220301-11-p0.en+FX+910',
+        'SOCS': 'CAISHAgCEhJnd3NfMjAyMzAzMDgtMF9SQzIaAmVuIAEaBgiA_LyuBg',
+        'PREF': 'tz=UTC&f6=40000000',
+        'YSC': 'DGVN2JXJQFE',
+        'VISITOR_INFO1_LIVE': 'k35Esl4JdfA'
+    }
+    
+    # Format cookies for headers
+    cookie_header = '; '.join([f'{k}={v}' for k, v in embedded_cookies.items()])
+    
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
+        'outtmpl': input_path,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com',
+            'Cookie': cookie_header
+        },
+        # Other options remain the same as in your original download_via_ytdlp
+        'quiet': False,
+        'no_warnings': False,
+        'retries': 3,
+        'fragment_retries': 3,
+        'extractor_retries': 3,
+        'ignoreerrors': False,
+        'noprogress': True,
+        'nooverwrites': False,
+        'continuedl': False,
+        'nopart': True,
+        'windowsfilenames': sys.platform == 'win32',
+        'paths': {
+            'home': DOWNLOAD_DIR,
+            'temp': TMP_DIR
+        },
+        'extractor_args': {
+            'youtube': {
+                'skip': ['dash', 'hls'],
+                'player_client': ['android', 'web']
+            }
+        },
+        'throttled_rate': '1M',
+        'sleep_interval': 2,
+        'max_sleep_interval': 10,
+        'force_ipv4': True,
+        'geo_bypass': True,
+        'geo_bypass_country': 'US',
+        'extract_flat': False,
+        'concurrent_fragment_downloads': 3,
+        'buffersize': '16M',
+        'no_check_certificate': True,
+        'verbose': True
+    }
+    
+    try:
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
+            
+            if not info_dict.get('requested_downloads'):
+                raise Exception("No downloads were requested")
+        
+        if not os.path.exists(input_path):
+            raise Exception("Downloaded file not found")
+            
+        if os.path.getsize(input_path) < 1024:
+            raise Exception("Downloaded file is too small (possibly incomplete)")
+        
+        print(f"Successfully downloaded video to: {input_path}")
+        return True
+        
+    except Exception as e:
+        print(f"yt-dlp download with embedded cookies failed: {str(e)}")
+        if os.path.exists(input_path):
+            try:
+                os.remove(input_path)
+            except:
+                pass
+        return False
+
+# Updated cookie validation function
+def validate_and_refresh_cookies():
+    """Ensure we have valid cookies and refresh them if needed"""
+    # First try to use existing cookies if they exist
+    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+        print("Found existing cookies file, validating...")
+        try:
+            # Test the cookies with a simple request
+            test_cmd = [
+                sys.executable, "-m", "yt_dlp",
+                "--cookies", COOKIES_FILE,
+                "--skip-download",
+                "--print", "%(title)s",
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            ]
+            result = subprocess.run(
+                test_cmd,
+                timeout=30,
+                capture_output=True,
+                text=True
+            )
+            
+            if "Sign in to confirm you're not a bot" not in result.stderr:
+                print("Existing cookies are still valid")
+                return True
+        except Exception as e:
+            print(f"Error validating existing cookies: {str(e)}")
+    
+    print("No valid cookies found, attempting to generate new ones...")
+    
+    # Try different methods to get cookies
+    cookie_sources = [
+        # 1. Try to extract from any available browser
+        lambda: generate_cookies_from_browser(),
+        # 2. Try to use embedded cookies as fallback
+        lambda: generate_embedded_cookies_file(),
+        # 3. Try to download a fresh cookies file from a secure source
+        lambda: download_fresh_cookies_file()
+    ]
+    
+    for source in cookie_sources:
+        try:
+            if source():
+                print("Successfully generated new cookies")
+                return True
+        except Exception as e:
+            print(f"Cookie generation attempt failed: {str(e)}")
+            continue
+    
+    print("All cookie generation methods failed")
+    return False
+
+def generate_cookies_from_browser():
+    """Try to generate cookies from any available browser"""
+    browsers = ['chrome', 'firefox', 'edge', 'brave']
+    for browser in browsers:
+        try:
+            print(f"Attempting to generate cookies from {browser}...")
+            cmd = [
+                sys.executable, "-m", "yt_dlp",
+                "--cookies-from-browser", browser,
+                "--cookies", COOKIES_FILE,
+                "--skip-download",
+                "--no-check-certificate",
+                "https://www.youtube.com"
+            ]
+            result = subprocess.run(
+                cmd, 
+                check=True, 
+                timeout=60,
+                capture_output=True,
+                text=True
+            )
+            
+            if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+                print(f"Successfully generated cookies from {browser}")
+                return True
+        except subprocess.TimeoutExpired:
+            print(f"Timeout generating cookies from {browser}")
+            continue
+        except Exception as e:
+            print(f"Error generating cookies from {browser}: {str(e)}")
+            continue
+    return False
+
+def generate_embedded_cookies_file():
+    """Generate a cookies file with embedded cookies"""
+    embedded_cookies = """# Netscape HTTP Cookie File
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tCONSENT\tYES+cb.20220301-11-p0.en+FX+910
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSOCS\tCAISHAgCEhJnd3NfMjAyMzAzMDgtMF9SQzIaAmVuIAEaBgiA_LyuBg
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tPREF\ttz=UTC&f6=40000000
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tYSC\tDGVN2JXJQFE
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tVISITOR_INFO1_LIVE\tk35Esl4JdfA
+"""
+    try:
+        with open(COOKIES_FILE, 'w', encoding='utf-8') as f:
+            f.write(embedded_cookies)
+        return True
+    except Exception as e:
+        print(f"Error writing embedded cookies: {str(e)}")
+        return False
+
+def download_fresh_cookies_file():
+    """Download a fresh cookies file from a secure source"""
+    # This would be your implementation to get cookies from a secure storage
+    # For example, from an S3 bucket or encrypted database
+    # Replace this with your actual implementation
+    return False
+
+def download_via_pytube(video_id, input_path):
+    """Fallback download method using pytube"""
+    try:
+        from pytube import YouTube
+        
+        yt = YouTube(f'https://www.youtube.com/watch?v={video_id}')
+        stream = yt.streams.filter(
+            progressive=True,
+            file_extension='mp4',
+            resolution='720p'
+        ).first()
+        
+        if not stream:
+            stream = yt.streams.filter(
+                progressive=True,
+                file_extension='mp4'
+            ).order_by('resolution').desc().first()
+        
+        if stream:
+            os.makedirs(os.path.dirname(input_path), exist_ok=True)
+            stream.download(output_path=os.path.dirname(input_path), filename=os.path.basename(input_path))
+            return True
+            
+        return False
+    except Exception as e:
+        print(f"Pytube download failed: {str(e)}")
+        return False
+
+def validate_and_refresh_cookies():
+    """Ensure we have valid cookies and refresh them if needed"""
+    if not validate_cookies_file(COOKIES_FILE):
+        print("No valid cookies file found, attempting to generate new cookies")
+        try:
+            # Try to generate cookies from common browsers
+            browsers = ['chrome', 'firefox', 'edge', 'brave']
+            for browser in browsers:
+                try:
+                    print(f"Attempting to generate cookies from {browser}...")
+                    cmd = [
+                        sys.executable, "-m", "yt_dlp",
+                        "--cookies-from-browser", browser,
+                        "--cookies", COOKIES_FILE,
+                        "--skip-download",
+                        "--no-check-certificate",
+                        "https://www.youtube.com"
+                    ]
+                    result = subprocess.run(
+                        cmd, 
+                        check=True, 
+                        timeout=60,
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    if validate_cookies_file(COOKIES_FILE):
+                        print(f"Successfully generated cookies from {browser}")
+                        return True
+                    else:
+                        print(f"Failed to generate valid cookies from {browser}")
+                        print("Command output:", result.stdout)
+                        print("Command error:", result.stderr)
+                except subprocess.TimeoutExpired:
+                    print(f"Timeout generating cookies from {browser}")
+                    continue
+                except Exception as e:
+                    print(f"Error generating cookies from {browser}: {str(e)}")
+                    continue
+            return False
+        except Exception as e:
+            print(f"Error generating cookies: {str(e)}")
+            return False
+    
+    # Validate the cookies are still working
+    try:
+        test_cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--cookies", COOKIES_FILE,
+            "--skip-download",
+            "--print", "%(title)s",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        ]
+        result = subprocess.run(
+            test_cmd,
+            timeout=30,
+            capture_output=True,
+            text=True
+        )
+        
+        if "Sign in to confirm you're not a bot" in result.stderr:
+            print("Cookies are no longer valid, attempting to refresh...")
+            os.remove(COOKIES_FILE)
+            return validate_and_refresh_cookies()
+            
+        return True
+    except Exception as e:
+        print(f"Error validating cookies: {str(e)}")
+        return False
+    
 @app.route('/merge-clips', methods=['POST'])
 def merge_clips_route():
+    
     try:
-        # Check ffmpeg availability first
+        # Validate cookies before processing
+        if not validate_and_refresh_cookies():
+            print("Warning: No valid YouTube cookies available - downloads may fail")
+
         if not ffmpeg_available:
             return jsonify({
-                'error': 'ffmpeg not available. Please install ffmpeg and ensure it is in your system PATH.',
+                'error': 'ffmpeg not available',
                 'status': False
             }), 500
             
         data = request.get_json()
+        if not data:
+            return jsonify({
+                'error': 'No data provided',
+                'status': False
+            }), 400
+            
         clips = data.get('clips', [])
-        
-        # Get cleanup preference from request, default to true
-        cleanup_downloads = data.get('cleanupDownloads', True)
-        
-        # Get aggressive cleanup option, default to false
-        cleanup_all_downloads = data.get('cleanupAllDownloads', False)
-        
         if not clips:
             return jsonify({
                 'error': 'No clips provided',
                 'status': False
             }), 400
 
-        # Create temporary file list for ffmpeg
+        # Validate each clip
+        for clip in clips:
+            if not isinstance(clip, dict):
+                return jsonify({
+                    'error': 'Invalid clip format - expected dictionary',
+                    'status': False
+                }), 400
+                
+            if not clip.get('videoId'):
+                return jsonify({
+                    'error': 'Missing videoId in clip',
+                    'status': False
+                }), 400
+                
+            try:
+                start_time = float(clip.get('startTime', 0))
+                end_time = float(clip.get('endTime', 0))
+                if end_time <= start_time:
+                    return jsonify({
+                        'error': f'Invalid time range: start_time ({start_time}) must be less than end_time ({end_time})',
+                        'status': False
+                    }), 400
+            except ValueError:
+                return jsonify({
+                    'error': 'Invalid startTime or endTime - must be numbers',
+                    'status': False
+                }), 400
+
         timestamp = int(time.time())
         file_list_path = os.path.join(TMP_DIR, f'filelist_{timestamp}.txt')
         output_path = os.path.join(TMP_DIR, f'merged_clips_{timestamp}.mp4')
-
-        # Process each clip
         processed_clips = []
+        
         try:
+            # Process each clip
             for clip in clips:
                 video_id = clip.get('videoId')
-                transcript_text = clip.get('transcriptText', '')
                 start_time = float(clip.get('startTime', 0))
                 end_time = float(clip.get('endTime', 0))
                 
-                if not video_id:
-                    raise ValueError(f"Missing videoId in clip: {clip}")
-                
-                if end_time <= start_time:
-                    raise ValueError(f"Invalid time range: start_time ({start_time}) must be less than end_time ({end_time})")
-                
                 input_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
                 
-                # Auto-download video if not found
-                if not os.path.exists(input_path) or os.path.getsize(input_path) == 0:
-                    print(f"Video {video_id} not found or empty. Attempting download...")
-                    
-                    download_success = False
+                # Download video if needed (with retries)
+                max_retries = 3
+                for attempt in range(max_retries):
                     try:
-                        # --- Try RapidAPI first (no retries) ---
-                        print(f"Attempting download via RapidAPI for video {video_id}")
-                        api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
-                        headers = {
-                            'x-rapidapi-key': 'c58bbfe08bmsh4487c5af7cf106fp1fa8d9jsn95391a6d8a1f',
-                            'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com'
-                        }
+                        if not os.path.exists(input_path) or os.path.getsize(input_path) == 0:
+                            print(f"Downloading video {video_id} (attempt {attempt + 1})")
+                            if not download_video(video_id, input_path):
+                                raise Exception(f"Failed to download video {video_id}")
                         
-                        response = requests.get(api_url, headers=headers, timeout=30)
-                        response.raise_for_status()
-                        result = response.json()
-                        
-                        adaptive_formats = result.get('adaptiveFormats', [])
-                        formats = result.get('formats', [])
-                        
-                        if (not adaptive_formats or not isinstance(adaptive_formats, list)) and (not formats or not isinstance(formats, list)):
-                            raise ValueError(f"No valid formats found via RapidAPI for video {video_id}")
-                        
-                        download_url = None
-                        for format_list in [formats, adaptive_formats]: # Prioritize combined formats
-                            for format_item in format_list:
-                                if format_item.get('url'):
-                                    download_url = format_item.get('url')
-                                    print(f"Using RapidAPI format: {format_item.get('qualityLabel', 'unknown quality')}")
-                                    break
-                            if download_url:
-                                break
-                        
-                        if not download_url:
-                            raise ValueError(f"No valid download URL found via RapidAPI for video {video_id}")
-
-                        print(f"Downloading video to path: {input_path}")
-                        os.makedirs(os.path.dirname(input_path), exist_ok=True)
-                        
-                        # Download entire content into memory first
-                        download_response = requests.get(download_url, timeout=90) # Increased timeout for full download
-                        download_response.raise_for_status()
-                        video_content = download_response.content
-                        total_size = len(video_content)
-                        print(f"RapidAPI Download completed (in memory). Total size: {total_size} bytes")
-
-                        if total_size < 1024:
-                             raise ValueError(f"Downloaded file via RapidAPI is too small or empty.")
-
-                        # Write content directly to the final file path
-                        with open(input_path, 'wb') as f:
-                            f.write(video_content)
-                        print(f"Successfully wrote video content to {input_path}")
-                        download_success = True # Mark as success
-                                
-                    except (requests.exceptions.RequestException, ValueError, KeyError) as rapid_api_error:
-                        print(f"RapidAPI download failed: {str(rapid_api_error)}")
-                        print(f"Falling back to yt-dlp for video {video_id}...")
-                        
-                        # --- Fallback to yt-dlp --- 
-                        try:
-                            # Path to store cookies
-                            cookies_file = os.path.join(BASE_DIR, 'youtube_cookies.txt')
-                            
-                            # Check if we already have a cookies file
-                            if not os.path.exists(cookies_file) or os.path.getsize(cookies_file) < 100:
-                                print(f"No valid cookies file found at {cookies_file}, attempting to extract from browser")
-                                # Try to extract cookies from browser if needed
-                                try:
-                                    # Try browsers based on platform
-                                    browsers_to_try = []
-                                    
-                                    if sys.platform == 'win32':
-                                        browsers_to_try = ['chrome', 'firefox', 'edge', 'brave']
-                                    elif sys.platform.startswith('linux'):
-                                        browsers_to_try = ['chrome', 'firefox', 'chromium', 'brave']
-                                    elif sys.platform == 'darwin':  # macOS
-                                        browsers_to_try = ['chrome', 'firefox', 'safari', 'brave']
-                                    else:
-                                        browsers_to_try = ['chrome', 'firefox']
-                                    
-                                    # Check if we have custom browser paths saved
-                                    browser_config_file = os.path.join(BASE_DIR, 'browser_paths.json')
-                                    custom_browser_paths = {}
-                                    
-                                    if os.path.exists(browser_config_file):
-                                        try:
-                                            with open(browser_config_file, 'r') as f:
-                                                custom_browser_paths = json.load(f)
-                                                print(f"Loaded custom browser paths: {custom_browser_paths}")
-                                                
-                                                # Prioritize browsers with custom paths
-                                                browsers_with_paths = [b for b in browsers_to_try if b in custom_browser_paths]
-                                                browsers_without_paths = [b for b in browsers_to_try if b not in custom_browser_paths]
-                                                
-                                                # Reorder browsers to try those with custom paths first
-                                                browsers_to_try = browsers_with_paths + browsers_without_paths
-                                                print(f"Reordered browsers to try: {browsers_to_try}")
-                                        except Exception as e:
-                                            print(f"Error loading browser paths: {str(e)}")
-                                            # Continue with default browser order
-                                    
-                                    # Try each browser until we get a valid cookies file
-                                    for browser_to_try in browsers_to_try:
-                                        print(f"Attempting to extract cookies from {browser_to_try}")
-                                        try:
-                                            # Define platform-specific browser profile paths
-                                            platform_paths = {
-                                                'win32': {
-                                                    'chrome': os.path.expanduser('~\\AppData\\Local\\Google\\Chrome\\User Data'),
-                                                    'firefox': os.path.expanduser('~\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles'),
-                                                    'edge': os.path.expanduser('~\\AppData\\Local\\Microsoft\\Edge\\User Data'),
-                                                    'brave': os.path.expanduser('~\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data'),
-                                                },
-                                                'linux': {
-                                                    'chrome': os.path.expanduser('~/.config/google-chrome'),
-                                                    'chrome-flatpak': os.path.expanduser('~/.var/app/com.google.Chrome/config/google-chrome'),
-                                                    'firefox': os.path.expanduser('~/.mozilla/firefox'),
-                                                    'brave': os.path.expanduser('~/.config/BraveSoftware/Brave-Browser'),
-                                                },
-                                                'darwin': {  # macOS
-                                                    'chrome': os.path.expanduser('~/Library/Application Support/Google/Chrome'),
-                                                    'firefox': os.path.expanduser('~/Library/Application Support/Firefox/Profiles'),
-                                                    'safari': os.path.expanduser('~/Library/Safari'),
-                                                    'brave': os.path.expanduser('~/Library/Application Support/BraveSoftware/Brave-Browser'),
-                                                }
-                                            }
-                                            
-                                            # Check first for custom path, then default path
-                                            browser_path = None
-                                            
-                                            # First check for custom path
-                                            if browser_to_try in custom_browser_paths and os.path.exists(custom_browser_paths[browser_to_try]):
-                                                browser_path = custom_browser_paths[browser_to_try]
-                                                print(f"Found custom browser profile at {browser_path}")
-                                            # Then check for default path
-                                            elif sys.platform in platform_paths and browser_to_try in platform_paths[sys.platform]:
-                                                path = platform_paths[sys.platform][browser_to_try]
-                                                if os.path.exists(path):
-                                                    browser_path = path
-                                                    print(f"Found default browser profile at {path}")
-                                            
-                                            # Create extract command
-                                            extract_cmd = [
-                                                sys.executable, "-m", "yt_dlp", 
-                                                "--cookies-from-browser"
-                                            ]
-                                            
-                                            if browser_path:
-                                                extract_cmd.append(f"{browser_to_try}:{browser_path}")
-                                            else:
-                                                extract_cmd.append(browser_to_try)
-                                                
-                                            extract_cmd.extend([
-                                                "--cookies", cookies_file,
-                                                "--skip-download",
-                                                "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Use a popular video to test
-                                            ])
-                                            
-                                            print(f"Running cookie extraction: {' '.join(extract_cmd)}")
-                                            result = subprocess.run(
-                                                extract_cmd, 
-                                                capture_output=True, 
-                                                text=True, 
-                                                timeout=20,  # Timeout after 20 seconds
-                                                check=False  # Don't raise exception on non-zero return
-                                            )
-                                            
-                                            # Check if cookies were extracted
-                                            if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 100:
-                                                print(f"Successfully extracted cookies from {browser_to_try}")
-                                                break
-                                            else:
-                                                print(f"Failed to extract cookies from {browser_to_try}: {result.stderr}")
-                                                                                        
-                                        except Exception as browser_err:
-                                            print(f"Error extracting cookies from {browser_to_try}: {str(browser_err)}")
-                                except Exception as cookie_err:
-                                    print(f"Failed to extract cookies from any browser: {str(cookie_err)}")
-                                    # Continue without cookies, but it might fail
-                            
-                            # Configure yt-dlp with cookies and extra options
-                            ydl_opts = {
-                                'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]', # Limit to 720p to avoid throttling
-                                'outtmpl': input_path, # Save directly to the target path
-                                'quiet': False,  # Show output for better debugging
-                                'verbose': True,  # More detailed output
-                                'noplaylist': True,
-                                'progress_hooks': [lambda d: print(f"yt-dlp: {d['status']}") if d['status'] in ['downloading', 'finished'] else None],
-                                'nocheckcertificate': True,  # Skip HTTPS certificate validation
-                                'ignoreerrors': True,  # Continue on download errors
-                                'no_warnings': False,  # Show warnings
-                                'retries': 10,  # Number of retries for HTTP requests
-                                'fragment_retries': 10,  # Number of retries for fragments
-                                'skip_unavailable_fragments': True,  # Skip unavailable fragments
-                                'extractor_retries': 5,  # Number of retries for extractor errors
-                                'file_access_retries': 5,  # Number of retries for file access
-                                'hls_prefer_native': True,  # Use native HLS downloader
-                                'hls_use_mpegts': True,  # Use MPEG-TS format for HLS
-                                'external_downloader_args': ['ffmpeg:-nostats', 'ffmpeg:-loglevel', 'ffmpeg:warning'],
-                                # Use browser cookies to mimic the browser, bypass age verification and geo-restriction
-                                'cookiesfrombrowser': (browser_to_try if 'browser_to_try' in locals() else 'chrome')
-                            }
-                            
-                            # Add cookies file if available
-                            if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 100:
-                                ydl_opts['cookiefile'] = cookies_file
-                            else:
-                                # Fallback to simple browser specification without path if extraction failed
-                                ydl_opts['cookiesfrombrowser'] = 'chrome'
-                                # Try adding some common headers to look more like a browser
-                                ydl_opts['http_headers'] = {
-                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                                    'Accept-Language': 'en-US,en;q=0.5',
-                                    'DNT': '1',
-                                    'Connection': 'keep-alive',
-                                    'Upgrade-Insecure-Requests': '1',
-                                    'Sec-Fetch-Dest': 'document',
-                                    'Sec-Fetch-Mode': 'navigate',
-                                    'Sec-Fetch-Site': 'none',
-                                    'Sec-Fetch-User': '?1',
-                                    'sec-ch-ua': '" Not A;Brand";v="99", "Chromium";v="91"',
-                                    'sec-ch-ua-mobile': '?0'
-                                }
-                            
-                            try:
-                                print(f"Starting yt-dlp download for video {video_id}")
-                                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                                    # Try multiple URL formats
-                                    urls_to_try = [
-                                        f'https://www.youtube.com/watch?v={video_id}',
-                                        f'https://www.youtube.com/embed/{video_id}',
-                                        f'https://youtu.be/{video_id}'
-                                    ]
-
-                                    last_error = None
-                                    for url in urls_to_try:
-                                        try:
-                                            ydl.download([url])
-                                            if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
-                                                download_success = True
-                                                break
-                                        except Exception as e:
-                                            last_error = e
-                                            print(f"Download attempt failed with URL {url}: {str(e)}")
-                                            continue
-
-                                    if not download_success:
-                                        raise last_error if last_error else Exception("All download attempts failed")
-
-                            except Exception as download_error:
-                                # Clean up any partial files
-                                for f in [input_path, f"{input_path}.part"]:
-                                    try:
-                                        if os.path.exists(f):
-                                            os.remove(f)
-                                    except:
-                                        pass
-                                raise download_error
-                                
-                        except Exception as ytdlp_error:
-                            print(f"yt-dlp download also failed: {str(ytdlp_error)}")
-                            traceback.print_exc()  # Print full traceback for debugging
-                            # Ensure partial tmp files from yt-dlp are cleaned (if any)
-                            if os.path.exists(input_path) and not os.path.getsize(input_path) > 1024:
-                                os.remove(input_path)
-                            if os.path.exists(f"{input_path}.part"):
-                                 os.remove(f"{input_path}.part")
-                             # Propagate the error if both methods fail
-                            raise Exception(f"All download methods failed for video {video_id}. RapidAPI error: {rapid_api_error}, yt-dlp error: {ytdlp_error}")
-                    
-                    # --- Validation (runs after either download method) ---
-                    if not download_success:
-                         # This should ideally not be reached if errors are raised properly above
-                         raise Exception(f"Download failed for video {video_id} without specific error.")
-                         
-                    if not os.path.exists(input_path):
-                        raise ValueError(f"File does not exist after download attempt: {input_path}")
-                        
-                    if os.path.getsize(input_path) < 1024:
-                        raise ValueError(f"Downloaded file is too small: {os.path.getsize(input_path)} bytes")
-                        
-                    try:
-                        probe_cmd = [
-                            ffmpeg_path if ffmpeg_path else 'ffmpeg',
-                            '-v', 'error',
-                            '-i', input_path,
-                            '-f', 'null',
-                            '-t', '1',
-                            '-'
-                        ]
-                        print(f"Validating downloaded file with ffmpeg: {' '.join(probe_cmd)}")
-                        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
-                        print(f"File validation successful for {input_path}")
-                    except subprocess.CalledProcessError as probe_error:
-                        print(f"ffmpeg validation failed: {probe_error.stderr}")
-                        # Attempt to remove the invalid file
-                        try:
-                            os.remove(input_path)
-                        except OSError as rm_err:
-                             print(f"Warning: Failed to remove invalid file {input_path}: {rm_err}")
-                        raise ValueError(f"Invalid media file downloaded: {probe_error.stderr}")
-                    except Exception as validate_err:
-                         print(f"Error during file validation: {validate_err}")
-                         raise ValueError(f"File validation check failed: {validate_err}")
-
-                    print(f"Successfully downloaded and validated video {video_id}")
-
-                # Create trimmed clip with a safe filename
-                safe_transcript = ""
-                if transcript_text:
-                    safe_transcript = "".join(x for x in transcript_text[:30] if x.isalnum() or x.isspace()).strip()
-                    
-                clip_filename = f'clip_{video_id}_{int(start_time)}_{int(end_time)}'
-                if safe_transcript:
-                    clip_filename += f'_{safe_transcript}'
-                    
-                clip_output = os.path.join(TMP_DIR, f'{clip_filename}.mp4')
-                
-                try:
-                    # Verify input file exists and is valid before processing
-                    if not os.path.exists(input_path):
-                        raise FileNotFoundError(f"Input file not found: {input_path}")
-                        
-                    if os.path.getsize(input_path) < 1024:
-                        raise ValueError(f"Input file too small: {os.path.getsize(input_path)} bytes")
-                    
-                    # Try using direct ffmpeg command instead of Python wrapper
-                    try:
-                        # Use re-encoding instead of copy mode to handle potentially corrupted files
-                        cmd = [
-                            ffmpeg_path if ffmpeg_path else 'ffmpeg',
-                            '-err_detect', 'aggressive',
-                            '-i', input_path,
-                            '-ss', str(start_time),
-                            '-to', str(end_time),
-                            '-c:v', 'libx264',  # Use re-encoding instead of copy to handle corrupted files
-                            '-c:a', 'aac',
-                            '-pix_fmt', 'yuv420p',  # Ensure compatibility
-                            '-preset', 'medium',    # Balance between quality and speed
-                            '-movflags', '+faststart',  # Optimize for web playback
-                            '-y',
-                            clip_output
-                        ]
-                        
-                        print(f"Running ffmpeg command: {' '.join(cmd)}")
-                        result = subprocess.run(cmd, capture_output=True, text=True)
-                        
-                        # Check for errors
-                        if result.returncode != 0:
-                            print(f"ffmpeg error: {result.stderr}")
-                            
-                            # Try an alternative method with input seeking (sometimes more reliable for corrupt files)
-                            print("First attempt failed, trying alternative method...")
-                            alt_cmd = [
-                                ffmpeg_path if ffmpeg_path else 'ffmpeg',
-                                '-ss', str(start_time),  # Seek before input (faster but less accurate)
-                                '-i', input_path,
-                                '-t', str(end_time - start_time),  # Duration instead of end time
-                                '-c:v', 'libx264',
-                                '-c:a', 'aac',
-                                '-pix_fmt', 'yuv420p',
-                                '-preset', 'medium',
-                                '-movflags', '+faststart',
-                                '-y',
-                                clip_output
-                            ]
-                            print(f"Running alternative ffmpeg command: {' '.join(alt_cmd)}")
-                            alt_result = subprocess.run(alt_cmd, capture_output=True, text=True)
-                            
-                            if alt_result.returncode != 0:
-                                print(f"Alternative ffmpeg command also failed: {alt_result.stderr}")
-                                raise Exception(f"All ffmpeg attempts failed: {result.stderr}\n{alt_result.stderr}")
-                    except subprocess.CalledProcessError as e:
-                        print(f"ffmpeg command failed: {e.stderr.decode() if e.stderr else str(e)}")
-                        raise Exception(f"ffmpeg command failed: {e.stderr.decode() if e.stderr else str(e)}")
+                        # Verify downloaded file
+                        if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
+                            raise ValueError(f"Downloaded file is invalid or too small: {input_path}")
+                        break
                     except Exception as e:
-                        print(f"Error running ffmpeg: {str(e)}")
+                        if attempt == max_retries - 1:
+                            raise
+                        time.sleep(2)  # Wait before retrying
+                        continue
+                
+                # Create trimmed clip
+                clip_output = os.path.join(TMP_DIR, f'clip_{video_id}_{int(start_time)}_{int(end_time)}.mp4')
+                
+                # Process clip with ffmpeg (with retries)
+                for attempt in range(max_retries):
+                    try:
+                        if not safe_ffmpeg_process(input_path, clip_output, start_time, end_time):
+                            raise Exception(f"Failed to process clip {video_id}")
                         
-                        # Fall back to Python wrapper as a backup
-                        print("Falling back to Python ffmpeg wrapper...")
-                        stream = ffmpeg.input(input_path)
-                        stream = ffmpeg.output(
-                            stream.filter_('trim', start=start_time, end=end_time),
-                            clip_output,
-                            acodec='aac',
-                            vcodec='libx264'
-                        )
-                        ffmpeg.run(stream, overwrite_output=True, quiet=True)
-                    
-                    # Verify the clip was created successfully
-                    if not os.path.exists(clip_output) or os.path.getsize(clip_output) == 0:
-                        raise Exception(f"Failed to create clip: {clip_output}")
-                        
-                    processed_clips.append({
-                        'path': clip_output,
-                        'info': clip
-                    })
-                except Exception as clip_error:
-                    raise Exception(f"Error processing clip {video_id}: {str(clip_error)}")
+                        if not os.path.exists(clip_output) or os.path.getsize(clip_output) == 0:
+                            raise Exception(f"Failed to create clip: {clip_output}")
+                        break
+                    except Exception as e:
+                        if attempt == max_retries - 1:
+                            raise
+                        time.sleep(1)
+                        continue
+                
+                processed_clips.append({
+                    'path': clip_output,
+                    'info': clip
+                })
 
             if not processed_clips:
                 raise ValueError("No clips were successfully processed")
                 
             # Create file list for concatenation
-            with open(file_list_path, 'w') as f:
+            with open(file_list_path, 'w', encoding='utf-8') as f:
                 for clip in processed_clips:
                     f.write(f"file '{clip['path']}'\n")
 
-            # Add a small delay to allow file handles to be released (especially on Windows)
-            time.sleep(1)
+            time.sleep(1)  # Allow file handles to release
 
-            # Merge all clips using direct ffmpeg command
-            try:
-                cmd = [
-                    ffmpeg_path if ffmpeg_path else 'ffmpeg',
-                    '-f', 'concat',
-                    '-safe', '0',
-                    '-i', file_list_path,
-                    '-c:v', 'libx264',  # Re-encode to ensure compatibility
-                    '-c:a', 'aac',
-                    '-y',
-                    output_path
-                ]
-                
-                print(f"Running ffmpeg merge command: {' '.join(cmd)}")
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                
-                # Check for errors
-                if result.returncode != 0:
-                    print(f"ffmpeg merge error: {result.stderr}")
-                    raise Exception(f"ffmpeg merge error: {result.stderr}")
-                
-                # Verify the merged file was created successfully
-                if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-                    raise Exception(f"Failed to create merged file: {output_path}")
-            except subprocess.CalledProcessError as e:
-                print(f"ffmpeg merge command failed: {e.stderr.decode() if e.stderr else str(e)}")
-                raise Exception(f"ffmpeg merge command failed: {e.stderr.decode() if e.stderr else str(e)}")
-            except Exception as merge_error:
-                raise Exception(f"Error merging clips: {str(merge_error)}")
-
-            # Upload the merged video to S3
-            unique_filename = f"merged_{uuid.uuid4()}_{timestamp}.mp4"
-            success, s3_url = upload_to_s3(output_path, AWS_S3_BUCKET, object_name=unique_filename)
+            # Merge clips (try both stream copy and re-encode methods)
+            merge_success = False
+            merge_errors = []
             
-            if not success:
-                raise Exception("Failed to upload merged video to S3")
+            for method in ['copy', 'encode']:
+                try:
+                    if method == 'copy':
+                        cmd = [
+                            ffmpeg_path if ffmpeg_path else 'ffmpeg',
+                            '-f', 'concat',
+                            '-safe', '0',
+                            '-i', file_list_path,
+                            '-c', 'copy',
+                            '-y', output_path
+                        ]
+                    else:
+                        cmd = [
+                            ffmpeg_path if ffmpeg_path else 'ffmpeg',
+                            '-f', 'concat',
+                            '-safe', '0',
+                            '-i', file_list_path,
+                            '-c:v', 'libx264',
+                            '-preset', 'fast',
+                            '-crf', '23',
+                            '-c:a', 'aac',
+                            '-b:a', '128k',
+                            '-y', output_path
+                        ]
+                    
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=300  # 5 minute timeout
+                    )
+                    
+                    if result.returncode != 0:
+                        raise Exception(result.stderr)
+                    
+                    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                        raise Exception("Merged file is empty or missing")
+                    
+                    merge_success = True
+                    break
+                
+                except Exception as e:
+                    merge_errors.append(f"{method} method failed: {str(e)}")
+                    continue
+            
+            if not merge_success:
+                raise Exception(f"All merge methods failed:\n" + "\n".join(merge_errors))
+            
+            # Upload to S3 with retries
+            unique_filename = f"merged_{uuid.uuid4()}.mp4"
+            max_upload_attempts = 3
+            s3_url = None
+            
+            for attempt in range(max_upload_attempts):
+                try:
+                    s3_client.upload_file(
+                        output_path,
+                        AWS_S3_BUCKET,
+                        unique_filename,
+                        ExtraArgs={
+                            'ContentType': 'video/mp4',
+                            'ACL': 'public-read'  # Ensure the file is accessible
+                        }
+                    )
+                    
+                    # Generate presigned URL
+                    s3_url = s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={
+                            'Bucket': AWS_S3_BUCKET,
+                            'Key': unique_filename
+                        },
+                        ExpiresIn=604800  # 7 days expiration
+                    )
+                    break
+                except Exception as upload_error:
+                    if attempt == max_upload_attempts - 1:
+                        raise Exception(f"Failed to upload to S3 after {max_upload_attempts} attempts: {str(upload_error)}")
+                    time.sleep(2)
+                    continue
+
+            return jsonify({
+                'message': 'Clips merged successfully',
+                's3Url': s3_url,
+                'clipsInfo': [clip['info'] for clip in processed_clips],
+                'success': True,
+                'status': True,
+                'fileNames3': unique_filename
+            })
 
         except Exception as e:
-            # Clean up any temporary files
-            for clip in processed_clips:
-                try:
-                    if os.path.exists(clip['path']):
-                        os.remove(clip['path'])
-                except Exception:
-                    pass
-            if os.path.exists(output_path):
-                try:
-                    os.remove(output_path)
-                except Exception:
-                    pass
-            # Log the full traceback for detailed debugging
-            print(f"Error processing merge-clips request: {str(e)}")
+            print(f"Error processing merge request: {str(e)}")
             traceback.print_exc()
-            raise e
+            return jsonify({
+                'error': str(e),
+                'status': False,
+                'type': 'processing_error'
+            }), 500
+            
         finally:
-            # Clean up the file list
-            try:
-                if os.path.exists(file_list_path):
-                    os.remove(file_list_path)
-            except Exception: # nosec
-                pass
-
-        # Clean up individual clips after successful merge and upload
-        for clip in processed_clips:
-            try:
-                if os.path.exists(clip['path']):
-                    os.remove(clip['path'])
-            except Exception: # nosec
-                pass
-
-        # Clean up the merged file from tmp after successful upload
-        try:
-            if os.path.exists(output_path):
-                os.remove(output_path)
-        except Exception: # nosec
-            pass
-
-        # Clean up the original video files from Download folder if cleanup is requested
-        if cleanup_downloads:
-            try:
-                if cleanup_all_downloads:
-                    # Aggressive cleanup - remove all mp4 files from Download folder
-                    removed_count = 0
-                    for filename in os.listdir(DOWNLOAD_DIR):
-                        if filename.endswith('.mp4'):
-                            file_path = os.path.join(DOWNLOAD_DIR, filename)
-                            try:
-                                os.remove(file_path)
-                                removed_count += 1
-                                print(f"Removed video file: {file_path}")
-                            except Exception as e:
-                                print(f"Failed to remove {file_path}: {str(e)}")
-                    
-                    print(f"Aggressive cleanup: removed {removed_count} video files from Download folder")
-                else:
-                    # Standard cleanup - remove only the videos used in this request
-                    video_ids = set(clip.get('videoId') for clip in clips if clip.get('videoId'))
-                    cleaned_videos = []
-                    
-                    for video_id in video_ids:
-                        video_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
-                        if os.path.exists(video_path):
-                            os.remove(video_path)
-                            cleaned_videos.append(video_id)
-                            print(f"Removed original video file: {video_path}")
-                    
-                    print(f"Cleaned up {len(cleaned_videos)} video files from Download folder")
-                
-                # Check if Download folder is empty
-                remaining_files = os.listdir(DOWNLOAD_DIR)
-                if not remaining_files:
-                    print(f"Download folder is empty, maintaining directory structure")
-            except Exception as cleanup_error:
-                print(f"Warning: Error cleaning up Download folder: {str(cleanup_error)}")
-                # Non-fatal error, continue with response
-        else:
-            print(f"Skipping Download folder cleanup as per request setting")
-
-        return jsonify({
-            'message': 'Clips merged successfully',
-            'outputPath': output_path,
-            's3Url': s3_url,
-            'clipsInfo': [clip['info'] for clip in processed_clips],
-            'success': True,
-            'status': True,
-            'fileNames3': unique_filename
-        })
+            # Enhanced cleanup with error handling
+            cleanup_errors = []
+            
+            def safe_remove(path):
+                try:
+                    if path and os.path.exists(path):
+                        os.remove(path)
+                except Exception as e:
+                    cleanup_errors.append(f"Failed to remove {path}: {str(e)}")
+            
+            # Cleanup processed clips
+            for clip in processed_clips:
+                safe_remove(clip.get('path'))
+            
+            # Cleanup other temp files
+            safe_remove(file_list_path)
+            safe_remove(output_path)
+            
+            if cleanup_errors:
+                print("Cleanup warnings:", "\n".join(cleanup_errors))
 
     except Exception as e:
-        # Catch exceptions raised from the inner try-except or other parts of the route
         print(f"Unhandled exception in /merge-clips route:")
         traceback.print_exc()
         return jsonify({
-            'error': str(e),
-            'status': False
+            'error': f"Internal server error: {str(e)}",
+            'status': False,
+            'type': 'unexpected_error'
         }), 500
-
+        
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=PORT)
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)))
