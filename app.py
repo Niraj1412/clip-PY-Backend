@@ -1309,19 +1309,21 @@ def download_via_rapidapi(video_id, input_path):
 
 # Update your yt-dlp download function to properly use cookies
 def download_via_ytdlp(video_id, input_path, use_cookies=False):
-    """Download video using yt-dlp with comprehensive fallback strategies and validation"""
+    """Enhanced video downloader with better error handling and fallbacks"""
     format_combinations = [
-        'bestvideo[height<=720]+bestaudio/best[height<=720]',
-        'best[height<=480]',
+        'bv*[height<=720]+ba/b[height<=720]',
+        'bv*+ba/b',
+        'best[ext=mp4]',
         'worst[ext=mp4]',
-        'bestvideo+bestaudio/best'
+        'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]'
     ]
 
     player_clients = [
         ['android', 'web'],
-        ['ios', 'web'],
+        ['tv_embedded', 'web'],
         ['android'],
-        ['web']
+        ['web'],
+        ['embedded', 'web']
     ]
 
     url_variants = [
@@ -1334,90 +1336,89 @@ def download_via_ytdlp(video_id, input_path, use_cookies=False):
     last_error = None
     attempt_count = 0
 
-    for format_str in format_combinations:
-        for clients in player_clients:
-            for url in url_variants:
-                attempt_count += 1
-                print(f"[Attempt {attempt_count}] format={format_str}, clients={clients}, url={url}")
+    # First try with cookies if available
+    if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+        print("Attempting with cookies...")
+        try:
+            return _attempt_downloads(video_id, input_path, format_combinations, 
+                                     player_clients, url_variants, True)
+        except Exception as e:
+            print(f"Cookie attempt failed: {e}")
 
-                ydl_opts = {
-                    'format': format_str,
-                    'outtmpl': input_path,
-                    'quiet': False,
-                    'no_warnings': False,
-                    'retries': 5,
-                    'fragment_retries': 10,
-                    'extractor_retries': 5,
-                    'ignoreerrors': False,
-                    'noprogress': True,
-                    'nooverwrites': False,
-                    'continuedl': False,
-                    'nopart': True,
-                    'windowsfilenames': sys.platform == 'win32',
-                    'paths': {'home': DOWNLOAD_DIR, 'temp': TMP_DIR},
-                    'extractor_args': {
-                        'youtube': {
-                            'skip': ['dash', 'hls'],
-                            'player_client': clients
-                        }
-                    },
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Accept-Language': 'en-US,en;q=0.9',
-                        'Referer': 'https://www.youtube.com/',
-                        'Origin': 'https://www.youtube.com'
-                    },
-                    'cookiefile': COOKIES_FILE if (use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100) else None,
-                    'throttled_rate': '1M',
-                    'ratelimit': 1000000,  # 1MB/s
-                    'socket_timeout': 30,
-                    'sleep_interval': 2,
-                    'max_sleep_interval': 30,
-                    'force_ipv4': True,
-                    'geo_bypass': True,
-                    'geo_bypass_country': 'US',
-                    'extract_flat': False,
-                    'concurrent_fragment_downloads': 3,
-                    'buffersize': '16M',
-                    'no_check_certificate': True,
-                    'verbose': True
-                }
+    # Fallback to without cookies
+    print("Falling back to no-cookie download...")
+    try:
+        return _attempt_downloads(video_id, input_path, format_combinations,
+                                player_clients, url_variants, False)
+    except Exception as e:
+        raise Exception(f"All download attempts failed: {e}")
 
+def _attempt_downloads(video_id, input_path, formats, clients, urls, use_cookies):
+    """Helper function to attempt downloads with given parameters"""
+    for format_str in formats:
+        for client in clients:
+            for url in urls:
                 try:
-                    os.makedirs(os.path.dirname(input_path), exist_ok=True)
+                    ydl_opts = {
+                        'format': format_str,
+                        'outtmpl': input_path,
+                        'quiet': True,
+                        'no_warnings': True,
+                        'retries': 3,
+                        'fragment_retries': 3,
+                        'extractor_retries': 3,
+                        'ignoreerrors': False,
+                        'noprogress': True,
+                        'nooverwrites': True,
+                        'continuedl': True,
+                        'nopart': True,
+                        'extractor_args': {
+                            'youtube': {
+                                'skip': ['dash', 'hls'],
+                                'player_client': client,
+                                'player_skip': ['config', 'webpage']
+                            }
+                        },
+                        'cookiefile': COOKIES_FILE if use_cookies else None,
+                        'http_headers': {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                            'Referer': 'https://www.youtube.com/',
+                            'Origin': 'https://www.youtube.com'
+                        },
+                        'geo_bypass': True,
+                        'geo_bypass_country': 'US',
+                        'concurrent_fragment_downloads': 3,
+                        'buffersize': '16M',
+                        'socket_timeout': 30,
+                        'extract_flat': False
+                    }
 
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(url, download=True)
-
-                        if not info.get('requested_downloads'):
-                            raise Exception("No downloads were requested or available")
-
-                    # Enhanced file validation
-                    if os.path.exists(input_path):
-                        file_size = os.path.getsize(input_path)
-                        if file_size > 1024:  # 1KB minimum
+                        
+                        if not info or not ydl._download_retcode == 0:
+                            raise Exception("Download failed or no data returned")
+                        
+                        # Enhanced validation
+                        if os.path.exists(input_path) and os.path.getsize(input_path) > 1024*1024:  # 1MB min
                             try:
                                 probe = ffmpeg.probe(input_path)
                                 if probe.get('streams'):
-                                    print(f"[SUCCESS] Downloaded valid video to: {input_path}")
                                     return True
                             except:
-                                pass
-                        os.remove(input_path)
-                    raise Exception("Downloaded file is invalid or too small")
-
+                                os.remove(input_path)
+                                continue
+                    
                 except yt_dlp.utils.DownloadError as e:
-                    if "Sign in to confirm you're not a bot" in str(e):
-                        print("[AUTH REQUIRED] YouTube requires login. Trying without cookies...")
-                        return download_via_ytdlp(video_id, input_path, use_cookies=False)
-                    print(f"[ERROR] yt-dlp failed: {e}")
-                    last_error = e
+                    if "Video unavailable" in str(e):
+                        print(f"Video unavailable - may be private/removed: {e}")
+                        raise
+                    continue
+                except Exception as e:
                     continue
 
-                except Exception as e:
-                    print(f"[EXCEPTION] during download: {e}")
-                    last_error = e
-                    continue
+    raise Exception("All download attempts failed")
     
     
 def emergency_fallback_download(video_id, input_path, max_retries=3):
