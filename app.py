@@ -1503,6 +1503,221 @@ def proxy_download(video_id, input_path):
     except:
         return False
 
+
+# Enhanced YouTube Downloader with Bot Bypass
+def download_video_enhanced(video_id, output_path):
+    """
+    Comprehensive download solution with:
+    - Multiple fallback methods
+    - Cookie rotation
+    - Proxy support
+    - Bot detection bypass
+    - File validation
+    """
+    MAX_ATTEMPTS = 3
+    WAIT_TIMES = [2, 5, 10]  # Exponential backoff
+    
+    download_methods = [
+        lambda: download_with_premium_cookies(video_id, output_path),
+        lambda: download_with_proxy_rotation(video_id, output_path),
+        lambda: download_with_embedded_cookies(video_id, output_path),
+        lambda: download_with_pytube_fallback(video_id, output_path),
+        lambda: download_with_direct_url(video_id, output_path)
+    ]
+
+    for attempt in range(MAX_ATTEMPTS):
+        for method in download_methods:
+            try:
+                print(f"Attempt {attempt+1} with {method.__name__}")
+                
+                # Try the download method
+                if method():
+                    # Validate the downloaded file
+                    if validate_video_file(output_path):
+                        print("Download successful with valid file")
+                        return True
+                    
+                    # If invalid, remove and try next method
+                    print("Downloaded file failed validation")
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                        
+            except Exception as e:
+                print(f"Download attempt failed: {str(e)}")
+                continue
+                
+        if attempt < MAX_ATTEMPTS - 1:
+            wait = WAIT_TIMES[attempt]
+            print(f"Waiting {wait} seconds before retry...")
+            time.sleep(wait)
+    
+    raise Exception(f"Failed to download after {MAX_ATTEMPTS} attempts")
+
+def validate_video_file(file_path):
+    """Comprehensive video file validation"""
+    if not os.path.exists(file_path):
+        return False
+        
+    # Minimum size check (1MB)
+    if os.path.getsize(file_path) < 1024 * 1024:
+        return False
+        
+    # FFprobe validation
+    try:
+        cmd = ['ffprobe', '-v', 'error', '-show_format', '-show_streams', file_path]
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10
+        )
+        return result.returncode == 0
+    except:
+        return False
+
+def download_with_premium_cookies(video_id, output_path):
+    """Download using premium cookies with rotation"""
+    # Get fresh cookies from secure storage
+    cookies_file = get_fresh_cookies()
+    
+    ydl_opts = {
+        'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
+        'outtmpl': output_path,
+        'cookiefile': cookies_file,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com',
+            'X-YouTube-Client-Name': '1',
+            'X-YouTube-Client-Version': '2.20250101.00.00'
+        },
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web']
+            }
+        },
+        'retries': 3,
+        'fragment_retries': 3,
+        'socket_timeout': 30,
+        'extractor_retries': 3
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+        return True
+    except:
+        return False
+
+def download_with_proxy_rotation(video_id, output_path):
+    """Download using rotating residential proxies"""
+    proxy = get_next_proxy()  # Implement proxy rotation
+    
+    ydl_opts = {
+        'format': 'worst[ext=mp4]',  # Lower quality less likely to be blocked
+        'outtmpl': output_path,
+        'proxy': proxy['url'],
+        'http_headers': {
+            'User-Agent': proxy['user_agent'],
+            'Accept-Language': 'en-US,en;q=0.5',
+            'X-Forwarded-For': proxy['ip']
+        },
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['tv_embedded', 'web']
+            }
+        },
+        'retries': 3,
+        'sleep_interval': 5,
+        'ignoreerrors': True
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+        return True
+    except:
+        return False
+
+def download_with_embedded_cookies(video_id, output_path):
+    """Download using hardcoded cookies that get periodically updated"""
+    cookies = """# Netscape HTTP Cookie File
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tCONSENT\tYES+cb.20250101-11-p0.en+FX+999
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tPREF\tf6=40000000&tz=UTC
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tVISITOR_INFO1_LIVE\tCg9JZ3FfV2hITE1jZw%3D%3D
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tYSC\tDGVN2JXJQFE
+"""
+    
+    cookie_file = f'/tmp/yt_cookies_{video_id}.txt'
+    with open(cookie_file, 'w') as f:
+        f.write(cookies)
+    
+    ydl_opts = {
+        'format': 'best[height<=480]',
+        'outtmpl': output_path,
+        'cookiefile': cookie_file,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com'
+        },
+        'retries': 3,
+        'ignoreerrors': True
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+        return True
+    finally:
+        try:
+            os.remove(cookie_file)
+        except:
+            pass
+
+def download_with_pytube_fallback(video_id, output_path):
+    """Fallback using pytube when yt-dlp fails"""
+    try:
+        from pytube import YouTube
+        
+        yt = YouTube(f'https://www.youtube.com/watch?v={video_id}')
+        stream = yt.streams.filter(
+            progressive=True,
+            file_extension='mp4'
+        ).order_by('resolution').desc().first()
+        
+        if stream:
+            stream.download(
+                output_path=os.path.dirname(output_path),
+                filename=os.path.basename(output_path)
+            )
+            return True
+        return False
+    except:
+        return False
+
+def download_with_direct_url(video_id, output_path):
+    """Direct download as last resort"""
+    try:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.5'
+        }
+        
+        with requests.get(url, headers=headers, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            with open(output_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        return True
+    except:
+        return False
+
+
 def embedded_cookies_download(video_id, input_path):
     """Use hardcoded cookies that get periodically updated"""
     cookies = """# Netscape HTTP Cookie File
