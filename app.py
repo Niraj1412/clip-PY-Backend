@@ -1687,31 +1687,22 @@ def download_via_ytdlp_without_cookies(video_id, input_path):
 
     
 def download_video_with_retries(video_id, output_path, max_attempts=3):
-    """Download video with multiple fallback methods and retries"""
-    download_methods = [
-        download_via_ytdlp_with_cookies,
+    methods = [
+        download_via_ytdlp_with_embedded_cookies,
         download_via_ytdlp_without_cookies,
         download_via_rapidapi,
-        download_via_pytube
+        emergency_fallback_download
     ]
     
-    last_error = None
-    
     for attempt in range(max_attempts):
-        for method in download_methods:
+        for method in methods:
             try:
-                print(f"Attempt {attempt + 1}: Trying {method.__name__}...")
                 if method(video_id, output_path):
-                    # Validate the downloaded file
                     if os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
-                        print(f"Successfully downloaded via {method.__name__}")
                         return True
-                    else:
-                        os.remove(output_path)
-                        raise ValueError("Downloaded file is invalid or too small")
+                    os.remove(output_path)
             except Exception as e:
-                last_error = e
-                print(f"Download attempt failed: {str(e)}")
+                print(f"Attempt {attempt+1} with {method.__name__} failed: {str(e)}")
                 if os.path.exists(output_path):
                     try:
                         os.remove(output_path)
@@ -1720,11 +1711,11 @@ def download_video_with_retries(video_id, output_path, max_attempts=3):
                 continue
         
         if attempt < max_attempts - 1:
-            wait_time = 2 ** (attempt + 1)  # Exponential backoff
-            print(f"Waiting {wait_time} seconds before retrying...")
+            wait_time = 2 ** (attempt + 1)
+            print(f"Waiting {wait_time} seconds before retry...")
             time.sleep(wait_time)
     
-    raise Exception(f"All download methods failed after {max_attempts} attempts. Last error: {str(last_error)}")
+    raise Exception(f"All download methods failed after {max_attempts} attempts")
 
 def download_via_ytdlp_with_cookies(video_id, output_path):
     """Download using yt-dlp with cookies for higher success rate"""
@@ -1852,13 +1843,12 @@ def generate_cookies_from_browser():
     return False
 
 def generate_embedded_cookies_file():
-    """Generate a cookies file with embedded cookies"""
+    """Create a cookies file with embedded cookies that might work"""
     embedded_cookies = """# Netscape HTTP Cookie File
 .youtube.com\tTRUE\t/\tTRUE\t2147483647\tCONSENT\tYES+cb.20220301-11-p0.en+FX+910
-.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSOCS\tCAISHAgCEhJnd3NfMjAyMzAzMDgtMF9SQzIaAmVuIAEaBgiA_LyuBg
-.youtube.com\tTRUE\t/\tTRUE\t2147483647\tPREF\ttz=UTC&f6=40000000
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tPREF\tf6=40000000&tz=UTC
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tVISITOR_INFO1_LIVE\tCg9JZ3FfV2hITE1jZw%3D%3D
 .youtube.com\tTRUE\t/\tTRUE\t2147483647\tYSC\tDGVN2JXJQFE
-.youtube.com\tTRUE\t/\tTRUE\t2147483647\tVISITOR_INFO1_LIVE\tk35Esl4JdfA
 """
     try:
         with open(COOKIES_FILE, 'w', encoding='utf-8') as f:
