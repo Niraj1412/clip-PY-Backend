@@ -29,6 +29,9 @@ import shutil
 
 load_dotenv()
 
+app = Flask(__name__)
+CORS(app)
+
 def setup_logging():
     log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
     os.makedirs(log_dir, exist_ok=True)
@@ -79,7 +82,7 @@ limiter = Limiter(
 )
 
 # Initialize Flask app
-app = Flask(__name__)
+
 
 # AWS S3 Configuration
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
