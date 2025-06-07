@@ -21,8 +21,62 @@ from botocore.exceptions import NoCredentialsError
 import uuid
 import yt_dlp
 import traceback
+import logging
+from logging.handlers import RotatingFileHandler
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+import shutil
 
 load_dotenv()
+
+def setup_logging():
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    logger = logging.getLogger('clip_merger')
+    logger.setLevel(logging.INFO)
+    
+    # File handler with rotation
+    file_handler = RotatingFileHandler(
+        os.path.join(log_dir, 'clip_merger.log'),
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5
+    )
+    file_handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    ))
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s'
+    ))
+    
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+# Initialize logger
+logger = setup_logging()
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s',
+    handlers=[
+        RotatingFileHandler('app.log', maxBytes=10*1024*1024, backupCount=5),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Initialize rate limiter
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["5 per minute"]
+)
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -168,6 +222,16 @@ def validate_cookies_file(cookies_path):
             return True
     except Exception as e:
         print(f"Error reading cookies file: {str(e)}")
+        return False
+
+
+def test_s3_connection():
+    """Test if we can connect to S3"""
+    try:
+        s3_client.head_bucket(Bucket=AWS_S3_BUCKET)
+        return True
+    except Exception as e:
+        logger.error(f"S3 connection test failed: {str(e)}")
         return False
 
 # Check if ffmpeg is available
@@ -1020,53 +1084,175 @@ def download_folder_status():
             'traceback': traceback.format_exc()
         }), 500
 
-def safe_ffmpeg_process(input_path, output_path, start_time, end_time):
-    """Safely process video clips with ffmpeg, with fallback from stream copy to re-encoding"""
+def safe_ffmpeg_process(input_path, output_path, start_time, end_time, max_attempts=3):
+    """Robust FFmpeg processing with multiple fallback methods and thorough validation
     
-    # Validate input file before processing
+    Args:
+        input_path: Path to input video file
+        output_path: Path for processed output file
+        start_time: Start time in seconds
+        end_time: End time in seconds
+        max_attempts: Number of retry attempts per method
+        
+    Returns:
+        bool: True if processing succeeded, False otherwise
+        
+    Raises:
+        Exception: If all processing methods fail after retries
+    """
+    # Enhanced input validation
     if not os.path.exists(input_path):
-        raise Exception(f"FFmpeg error: input file does not exist - {input_path}")
-    if os.path.getsize(input_path) < 1024:  # < 1KB likely means broken/incomplete
-        raise Exception(f"FFmpeg error: input file is too small or corrupt - {input_path}")
-
-    ffmpeg_exec = ffmpeg_path if 'ffmpeg_path' in globals() and ffmpeg_path else 'ffmpeg'
-
-    # First attempt: stream copy (fastest)
-    try:
-        cmd = [
-            ffmpeg_exec,
-            '-i', input_path,
-            '-ss', str(start_time),
-            '-to', str(end_time),
-            '-c', 'copy',
-            '-y', output_path
-        ]
-        subprocess.run(cmd, check=True, capture_output=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"FFmpeg stream copy failed: {e.stderr.decode(errors='ignore')}")
-
-    # Second attempt: re-encode
-    try:
-        cmd = [
-            ffmpeg_exec,
-            '-i', input_path,
-            '-ss', str(start_time),
-            '-to', str(end_time),
-            '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '23',
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-y', output_path
-        ]
-        subprocess.run(cmd, check=True, capture_output=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        raise Exception(f"FFmpeg re-encode failed: {e.stderr.decode(errors='ignore')}")
-    except Exception as e:
-        raise Exception(f"FFmpeg unexpected error: {str(e)}")
-
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+    
+    min_file_size = 1024  # 1KB minimum file size
+    if os.path.getsize(input_path) < min_file_size:
+        raise ValueError(f"Input file too small (size: {os.path.getsize(input_path)} bytes)")
+    
+    # Validate time parameters
+    if end_time <= start_time:
+        raise ValueError(f"Invalid time range (start: {start_time}, end: {end_time})")
+    
+    # Processing methods with different approaches
+    methods = [
+        {  # Method 1: Stream copy (fastest)
+            'name': 'stream_copy',
+            'cmd': [
+                ffmpeg_path if ffmpeg_path else 'ffmpeg',
+                '-i', input_path,
+                '-ss', str(start_time),
+                '-to', str(end_time),
+                '-c', 'copy',  # Stream copy
+                '-movflags', 'faststart',
+                '-y', output_path
+            ],
+            'timeout': 60  # 1 minute timeout
+        },
+        {  # Method 2: Re-encode with h264
+            'name': 'reencode_h264',
+            'cmd': [
+                ffmpeg_path if ffmpeg_path else 'ffmpeg',
+                '-i', input_path,
+                '-ss', str(start_time),
+                '-to', str(end_time),
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-crf', '23',
+                '-c:a', 'aac',
+                '-b:a', '128k',
+                '-movflags', 'faststart',
+                '-y', output_path
+            ],
+            'timeout': 300  # 5 minute timeout
+        },
+        {  # Method 3: Error-resilient re-encode
+            'name': 'error_resilient',
+            'cmd': [
+                ffmpeg_path if ffmpeg_path else 'ffmpeg',
+                '-err_detect', 'ignore_err',
+                '-i', input_path,
+                '-ss', str(start_time),
+                '-to', str(end_time),
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-crf', '23',
+                '-c:a', 'aac',
+                '-b:a', '128k',
+                '-movflags', 'faststart',
+                '-fflags', '+genpts',  # Generate missing PTS
+                '-y', output_path
+            ],
+            'timeout': 600  # 10 minute timeout
+        },
+        {  # Method 4: Two-pass encoding (highest quality fallback)
+            'name': 'two_pass',
+            'cmd': [
+                ffmpeg_path if ffmpeg_path else 'ffmpeg',
+                '-i', input_path,
+                '-ss', str(start_time),
+                '-to', str(end_time),
+                '-c:v', 'libx264',
+                '-preset', 'medium',
+                '-crf', '18',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-movflags', 'faststart',
+                '-y', output_path
+            ],
+            'timeout': 900  # 15 minute timeout
+        }
+    ]
+    
+    # Try each method with retries
+    for method in methods:
+        for attempt in range(max_attempts):
+            try:
+                # Clean up any previous failed output
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                
+                print(f"Attempting {method['name']} (attempt {attempt + 1})")
+                
+                # Run FFmpeg with timeout
+                result = subprocess.run(
+                    method['cmd'],
+                    check=True,
+                    timeout=method['timeout'],
+                    capture_output=True,
+                    text=True
+                )
+                
+                # Validate output file
+                if not os.path.exists(output_path):
+                    raise ValueError("Output file not created")
+                
+                if os.path.getsize(output_path) < min_file_size:
+                    raise ValueError(f"Output file too small (size: {os.path.getsize(output_path)} bytes)")
+                
+                # Verify video stream
+                probe_cmd = [
+                    ffmpeg_path if ffmpeg_path else 'ffprobe',
+                    '-v', 'error',
+                    '-select_streams', 'v:0',
+                    '-show_entries', 'stream=codec_name,width,height,duration',
+                    '-of', 'json',
+                    output_path
+                ]
+                probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                
+                if probe_result.returncode != 0:
+                    raise ValueError(f"FFprobe validation failed: {probe_result.stderr}")
+                
+                print(f"Success with {method['name']}")
+                return True
+                
+            except subprocess.TimeoutExpired:
+                print(f"{method['name']} timed out on attempt {attempt + 1}")
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                if attempt == max_attempts - 1:
+                    continue  # Try next method
+                time.sleep(2 ** attempt)  # Exponential backoff
+                
+            except subprocess.CalledProcessError as e:
+                print(f"{method['name']} failed on attempt {attempt + 1}: {e.stderr}")
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                if attempt == max_attempts - 1:
+                    continue  # Try next method
+                time.sleep(2 ** attempt)  # Exponential backoff
+                
+            except Exception as e:
+                print(f"Unexpected error with {method['name']}: {str(e)}")
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                if attempt == max_attempts - 1:
+                    continue  # Try next method
+                time.sleep(2 ** attempt)  # Exponential backoff
+    
+    # If we get here, all methods failed
+    error_msg = f"All FFmpeg processing methods failed for {input_path}"
+    print(error_msg)
+    raise Exception(error_msg)
 
 def download_via_rapidapi(video_id, input_path):
     """Download video using RapidAPI"""
@@ -1409,101 +1595,229 @@ def emergency_fallback_download(video_id, input_path, max_retries=3):
     return False
 
 
-def download_video(video_id, input_path):
-    """Main download function with comprehensive retry logic"""
-    max_attempts = 3
-    wait_times = [2, 5, 10]  # Seconds to wait between attempts
+def download_video(video_id, output_path, max_retries=3):
+    """
+    Enhanced video download function with comprehensive retry logic and validation
+    Attempts multiple download methods with proper error handling and validation
     
-    for attempt in range(max_attempts):
+    Args:
+        video_id (str): YouTube video ID
+        output_path (str): Path to save the downloaded video
+        max_retries (int): Maximum number of retry attempts (default: 3)
+        
+    Returns:
+        bool: True if download succeeded, raises exception if all attempts fail
+    """
+    # Validate output directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    # Define download methods in order of preference
+    download_methods = [
+        # 1. Premium method with fresh cookies
+        lambda: premium_download(video_id, output_path),
+        # 2. yt-dlp with validated cookies
+        lambda: download_via_ytdlp_with_cookies(video_id, output_path),
+        # 3. Proxy download with rotating IPs
+        lambda: proxy_download(video_id, output_path),
+        # 4. Embedded cookies fallback
+        lambda: embedded_cookies_download(video_id, output_path),
+        # 5. RapidAPI fallback
+        lambda: download_via_rapidapi(video_id, output_path),
+        # 6. Emergency methods
+        lambda: emergency_fallback_download(video_id, output_path)
+    ]
+    
+    for attempt in range(max_retries):
         try:
-            # First try with cookies
-            if validate_cookies_file(COOKIES_FILE):
-                if download_via_ytdlp(video_id, input_path, use_cookies=True):
-                    return True
+            print(f"Download attempt {attempt + 1}/{max_retries} for video {video_id}")
             
-            # Then try without cookies
-            if download_via_ytdlp(video_id, input_path, use_cookies=False):
-                return True
+            # Try each download method until one succeeds
+            for method in download_methods:
+                method_name = method.__name__ if hasattr(method, '__name__') else method.__class__.__name__
+                print(f"Trying method: {method_name}")
+                
+                try:
+                    if method():
+                        # Validate the downloaded file
+                        if validate_video_file(output_path):
+                            print(f"Successfully downloaded video {video_id} using {method_name}")
+                            return True
+                        else:
+                            print(f"Downloaded file failed validation, trying next method")
+                            os.remove(output_path)
+                            continue
+                except Exception as e:
+                    print(f"Method {method_name} failed: {str(e)}")
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                    continue
             
-            # Then try RapidAPI
-            if download_via_rapidapi(video_id, input_path):
-                return True
+            # If we get here, all methods failed
+            raise Exception("All download methods failed for this attempt")
             
         except Exception as e:
             print(f"Attempt {attempt + 1} failed: {str(e)}")
-            if attempt < max_attempts - 1:
-                wait = wait_times[attempt]
-                print(f"Waiting {wait} seconds before retrying...")
-                time.sleep(wait)
-            continue
+            if attempt == max_retries - 1:
+                raise Exception(f"Failed to download video after {max_retries} attempts: {str(e)}")
+            
+            # Exponential backoff
+            wait_time = min(2 ** (attempt + 1), 30)  # Cap at 30 seconds
+            print(f"Waiting {wait_time} seconds before retry...")
+            time.sleep(wait_time)
     
-    raise Exception(f"Failed to download video after {max_attempts} attempts")
+    raise Exception(f"All download attempts failed for video {video_id}")
 
-def premium_download(video_id, input_path):
-    """Highest success rate method using premium cookies"""
-    premium_cookies = get_premium_cookies()  # Implement this to get fresh cookies
+
+def validate_video_file(file_path):
+    """
+    Thorough validation of downloaded video file
     
-    ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-        'outtmpl': input_path,
-        'cookiefile': premium_cookies,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.youtube.com/',
-            'Origin': 'https://www.youtube.com'
-        },
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web'],
-                'skip': ['hls', 'dash']
-            }
-        },
-        'retries': 10,
-        'fragment_retries': 10,
-        'extractor_retries': 3,
-        'quiet': True
-    }
+    Args:
+        file_path (str): Path to the video file
+        
+    Returns:
+        bool: True if file is valid, False otherwise
+    """
+    if not os.path.exists(file_path):
+        print(f"File does not exist: {file_path}")
+        return False
     
+    file_size = os.path.getsize(file_path)
+    if file_size < 1024:  # 1KB minimum
+        print(f"File is too small ({file_size} bytes): {file_path}")
+        return False
+    
+    # Check basic file type
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
-        return os.path.exists(input_path)
-    except:
+        import magic
+        file_type = magic.from_file(file_path)
+        if 'MP4' not in file_type and 'ISO Media' not in file_type:
+            print(f"Invalid file type: {file_type}")
+            return False
+    except ImportError:
+        print("python-magic not available, skipping file type check")
+    
+    # Verify with ffprobe
+    try:
+        cmd = [
+            ffmpeg_path if ffmpeg_path else 'ffprobe',
+            '-v', 'error',
+            '-show_format',
+            '-show_streams',
+            file_path
+        ]
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            print(f"FFprobe validation failed: {result.stderr}")
+            return False
+        
+        # Check for at least one video stream
+        if 'codec_type=video' not in result.stdout:
+            print("No video stream found in file")
+            return False
+            
+        return True
+        
+    except Exception as e:
+        print(f"Error during ffprobe validation: {str(e)}")
         return False
 
-def proxy_download(video_id, input_path):
+
+def premium_download(video_id, output_path):
+    """
+    Highest success rate download method using premium cookies
+    """
+    try:
+        # Get fresh premium cookies (implement your own method)
+        cookies_file = get_premium_cookies()
+        if not cookies_file or not os.path.exists(cookies_file):
+            return False
+        
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+            'outtmpl': output_path,
+            'cookiefile': cookies_file,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.youtube.com/',
+                'Origin': 'https://www.youtube.com',
+                'X-YouTube-Client-Name': '1',
+                'X-YouTube-Client-Version': '2.20250101.00.00'
+            },
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                    'skip': ['hls', 'dash']
+                }
+            },
+            'retries': 10,
+            'fragment_retries': 10,
+            'extractor_retries': 3,
+            'quiet': True,
+            'no_warnings': True,
+            'ignoreerrors': False
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
+            if not info.get('requested_downloads'):
+                raise Exception("No downloads were requested")
+        
+        return os.path.exists(output_path) and os.path.getsize(output_path) > 1024
+        
+    except Exception as e:
+        print(f"Premium download failed: {str(e)}")
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        return False
+
+
+def proxy_download(video_id, output_path):
     """Use rotating residential proxies to avoid detection"""
-    proxies = get_fresh_proxies()  # Implement proxy rotation
-    
-    ydl_opts = {
-        'format': 'worst[ext=mp4]',  # Lower quality less likely to trigger blocks
-        'outtmpl': input_path,
-        'proxy': proxies[0]['url'],
-        'http_headers': {
-            'User-Agent': proxies[0]['user_agent'],
-            'Accept-Language': 'en-US,en;q=0.5',
-            'X-Forwarded-For': proxies[0]['ip']
-        },
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv_embedded', 'web']
-            }
-        },
-        'retries': 5,
-        'sleep_interval': 5,
-        'max_sleep_interval': 30,
-        'ignoreerrors': True
-    }
-    
     try:
+        proxies = get_fresh_proxies()  # Implement your proxy rotation
+        
+        ydl_opts = {
+            'format': 'worst[ext=mp4]',  # Lower quality less likely to trigger blocks
+            'outtmpl': output_path,
+            'proxy': proxies[0]['url'],
+            'http_headers': {
+                'User-Agent': proxies[0]['user_agent'],
+                'Accept-Language': 'en-US,en;q=0.5',
+                'X-Forwarded-For': proxies[0]['ip']
+            },
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['tv_embedded', 'web']
+                }
+            },
+            'retries': 5,
+            'sleep_interval': 5,
+            'max_sleep_interval': 30,
+            'ignoreerrors': True
+        }
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
-        return os.path.exists(input_path)
-    except:
+        
+        return os.path.exists(output_path) and os.path.getsize(output_path) > 1024
+        
+    except Exception as e:
+        print(f"Proxy download failed: {str(e)}")
+        if os.path.exists(output_path):
+            os.remove(output_path)
         return False
 
-def embedded_cookies_download(video_id, input_path):
+
+def embedded_cookies_download(video_id, output_path):
     """Use hardcoded cookies that get periodically updated"""
     cookies = """# Netscape HTTP Cookie File
 .youtube.com\tTRUE\t/\tTRUE\t2147483647\tCONSENT\tYES+cb.20250101-11-p0.en+FX+999
@@ -1513,34 +1827,32 @@ def embedded_cookies_download(video_id, input_path):
 """
     
     cookie_file = f'/tmp/yt_cookies_{video_id}.txt'
-    with open(cookie_file, 'w') as f:
-        f.write(cookies)
-    
-    ydl_opts = {
-        'format': 'best[height<=480]',
-        'outtmpl': input_path,
-        'cookiefile': cookie_file,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.youtube.com/',
-            'Origin': 'https://www.youtube.com',
-            'X-YouTube-Client-Name': '1',
-            'X-YouTube-Client-Version': '2.20250101.00.00'
-        },
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web']
-            }
-        },
-        'retries': 3,
-        'ignoreerrors': True
-    }
-    
     try:
+        with open(cookie_file, 'w') as f:
+            f.write(cookies)
+        
+        ydl_opts = {
+            'format': 'best[height<=480]',
+            'outtmpl': output_path,
+            'cookiefile': cookie_file,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0',
+                'Accept-Language': 'en-US,en;q=0.9'
+            },
+            'retries': 3,
+            'ignoreerrors': True
+        }
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
-        return os.path.exists(input_path)
+        
+        return os.path.exists(output_path) and os.path.getsize(output_path) > 1024
+        
+    except Exception as e:
+        print(f"Embedded cookies download failed: {str(e)}")
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        return False
     finally:
         try:
             os.remove(cookie_file)
@@ -2000,90 +2312,202 @@ def download_via_pytube(video_id, input_path):
     except Exception as e:
         print(f"Pytube download failed: {str(e)}")
         return False
-
 def validate_and_refresh_cookies():
-    """Ensure we have valid cookies and refresh them if needed"""
-    if not validate_cookies_file(COOKIES_FILE):
-        print("No valid cookies file found, attempting to generate new cookies")
-        try:
-            # Try to generate cookies from common browsers
-            browsers = ['chrome', 'firefox', 'edge', 'brave']
-            for browser in browsers:
-                try:
-                    print(f"Attempting to generate cookies from {browser}...")
-                    cmd = [
-                        sys.executable, "-m", "yt_dlp",
-                        "--cookies-from-browser", browser,
-                        "--cookies", COOKIES_FILE,
-                        "--skip-download",
-                        "--no-check-certificate",
-                        "https://www.youtube.com"
-                    ]
-                    result = subprocess.run(
-                        cmd, 
-                        check=True, 
-                        timeout=60,
-                        capture_output=True,
-                        text=True
-                    )
-                    
-                    if validate_cookies_file(COOKIES_FILE):
-                        print(f"Successfully generated cookies from {browser}")
-                        return True
-                    else:
-                        print(f"Failed to generate valid cookies from {browser}")
-                        print("Command output:", result.stdout)
-                        print("Command error:", result.stderr)
-                except subprocess.TimeoutExpired:
-                    print(f"Timeout generating cookies from {browser}")
-                    continue
-                except Exception as e:
-                    print(f"Error generating cookies from {browser}: {str(e)}")
-                    continue
-            return False
-        except Exception as e:
-            print(f"Error generating cookies: {str(e)}")
-            return False
-    
-    # Validate the cookies are still working
+    """Enhanced cookie validation with better error handling and refresh logic"""
     try:
-        test_cmd = [
-            sys.executable, "-m", "yt_dlp",
-            "--cookies", COOKIES_FILE,
-            "--skip-download",
-            "--print", "%(title)s",
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-        ]
-        result = subprocess.run(
-            test_cmd,
-            timeout=30,
-            capture_output=True,
-            text=True
-        )
-        
-        if "Sign in to confirm you're not a bot" in result.stderr:
-            print("Cookies are no longer valid, attempting to refresh...")
-            os.remove(COOKIES_FILE)
-            return validate_and_refresh_cookies()
+        # First check if we have a cookies file that might work
+        if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+            # Test cookies with a simple YouTube request
+            test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            test_cmd = [
+                sys.executable, "-m", "yt_dlp",
+                "--cookies", COOKIES_FILE,
+                "--skip-download",
+                "--print", "%(title)s",
+                test_url
+            ]
             
-        return True
-    except Exception as e:
-        print(f"Error validating cookies: {str(e)}")
+            try:
+                result = subprocess.run(
+                    test_cmd,
+                    timeout=30,
+                    capture_output=True,
+                    text=True
+                )
+                
+                if "Sign in" not in result.stderr and result.returncode == 0:
+                    print("Existing cookies are still valid")
+                    return True
+            except subprocess.TimeoutExpired:
+                print("Cookie validation timed out")
+            except Exception as e:
+                print(f"Cookie validation error: {str(e)}")
+        
+        # If we get here, cookies are invalid - generate fresh ones
+        print("Generating fresh cookies...")
+        browsers = ['chrome', 'firefox', 'edge', 'brave', 'safari']
+        
+        for browser in browsers:
+            try:
+                print(f"Attempting to generate cookies from {browser}...")
+                cmd = [
+                    sys.executable, "-m", "yt_dlp",
+                    "--cookies-from-browser", browser,
+                    "--cookies", COOKIES_FILE,
+                    "--skip-download",
+                    "--no-check-certificate",
+                    "https://www.youtube.com"
+                ]
+                
+                # Set longer timeout for cookie generation
+                result = subprocess.run(
+                    cmd, 
+                    timeout=120,  # 2 minutes timeout
+                    capture_output=True,
+                    text=True
+                )
+                
+                # Verify the generated cookies file
+                if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+                    # Quick validation of the cookies format
+                    with open(COOKIES_FILE, 'r') as f:
+                        first_line = f.readline().strip()
+                        if first_line.startswith(('# HTTP Cookie File', '# Netscape HTTP Cookie File')):
+                            print(f"Successfully generated cookies from {browser}")
+                            return True
+                
+                print(f"Failed to generate valid cookies from {browser}")
+                if result.stderr:
+                    print("Error output:", result.stderr)
+                
+            except subprocess.TimeoutExpired:
+                print(f"Timeout generating cookies from {browser}")
+                continue
+            except Exception as e:
+                print(f"Error generating cookies from {browser}: {str(e)}")
+                continue
+        
+        # Final fallback - try to use embedded cookies if all else fails
+        print("Attempting to use embedded cookies as fallback...")
+        embedded_cookies = """# Netscape HTTP Cookie File
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tCONSENT\tYES+cb.20220301-11-p0.en+FX+910
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tPREF\tf6=40000000&tz=UTC
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tVISITOR_INFO1_LIVE\tk35Esl4JdfA
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tYSC\tDGVN2JXJQFE
+"""
+        try:
+            with open(COOKIES_FILE, 'w') as f:
+                f.write(embedded_cookies)
+            
+            # Test if these cookies work
+            test_result = subprocess.run(
+                test_cmd,
+                timeout=30,
+                capture_output=True,
+                text=True
+            )
+            
+            if "Sign in" not in test_result.stderr and test_result.returncode == 0:
+                print("Fallback embedded cookies worked")
+                return True
+            
+        except Exception as e:
+            print(f"Failed to use embedded cookies: {str(e)}")
+        
         return False
     
+    except Exception as e:
+        print(f"Unexpected error in cookie validation: {str(e)}")
+        return False
+    
+    
+ERROR_SUGGESTIONS = {
+    'authentication_error': [
+        "Upload fresh YouTube cookies",
+        "Try again later if rate-limited",
+        "Use a different network/VPN"
+    ],
+    'processing_error': [
+        "Try shorter clip durations",
+        "Check video formats are supported",
+        "Verify sufficient system resources"
+    ],
+    'storage_error': [
+        "Check your S3 bucket permissions",
+        "Verify your AWS credentials",
+        "Try again later if service is overloaded"
+    ],
+    'resource_error': [
+        "Free up disk space",
+        "Check available memory",
+        "Reduce the number of concurrent operations"
+    ],
+    'unexpected_error': [
+        "Try again with different clips",
+        "Check server logs for details",
+        "Contact support if problem persists"
+    ]
+}
+
+def classify_error(error):
+    """Classify errors for better user feedback"""
+    error_str = str(error).lower()
+    if 'cookies' in error_str or 'sign in' in error_str or 'bot' in error_str:
+        return 'authentication_error'
+    elif 'ffmpeg' in error_str or 'moov atom' in error_str or 'processing' in error_str:
+        return 'processing_error'
+    elif 's3' in error_str or 'upload' in error_str or 'aws' in error_str:
+        return 'storage_error'
+    elif 'disk' in error_str or 'space' in error_str or 'memory' in error_str:
+        return 'resource_error'
+    return 'unexpected_error'
+
+def get_error_suggestions(error_type):
+    """Get suggestions for specific error types"""
+    return ERROR_SUGGESTIONS.get(error_type, ERROR_SUGGESTIONS['unexpected_error'])
+
+def has_sufficient_disk_space(min_free_gb=5):
+    """Check if there's sufficient disk space available"""
+    try:
+        if sys.platform == 'win32':
+            import ctypes
+            free_bytes = ctypes.c_ulonglong(0)
+            ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+                ctypes.c_wchar_p(os.path.splitdrive(DOWNLOAD_DIR)[0]), 
+                None, None, ctypes.pointer(free_bytes)
+            )
+            free_gb = free_bytes.value / (1024**3)
+        else:
+            stat = shutil.disk_usage(DOWNLOAD_DIR)
+            free_gb = stat.free / (1024**3)
+        
+        return free_gb >= min_free_gb
+    except Exception as e:
+        logger.error(f"Error checking disk space: {str(e)}")
+        return False
+
+    
 @app.route('/merge-clips', methods=['POST'])
+@limiter.limit("5 per minute")  # Add rate limiting
 def merge_clips_route():
     try:
-        # Validate cookies before processing
-        if not validate_and_refresh_cookies():
-            print("Warning: No valid YouTube cookies available - downloads may fail")
+        # Initial system checks
+        health_checks = {
+            'ffmpeg_available': ffmpeg_available,
+            'disk_space': has_sufficient_disk_space(),
+            'cookies_valid': validate_and_refresh_cookies(),
+            's3_accessible': test_s3_connection()
+        }
 
-        if not ffmpeg_available:
+        if not all(health_checks.values()):
+            failed_checks = {k: v for k, v in health_checks.items() if not v}
             return jsonify({
-                'error': 'ffmpeg not available',
+                'error': 'System health check failed',
+                'failed_checks': failed_checks,
                 'status': False
             }), 500
-            
+
+        # Request validation
         data = request.get_json()
         if not data:
             return jsonify({
@@ -2098,106 +2522,120 @@ def merge_clips_route():
                 'status': False
             }), 400
 
-        # Validate each clip
-        for clip in clips:
-            if not isinstance(clip, dict):
-                return jsonify({
-                    'error': 'Invalid clip format - expected dictionary',
-                    'status': False
-                }), 400
-                
-            if not clip.get('videoId'):
-                return jsonify({
-                    'error': 'Missing videoId in clip',
-                    'status': False
-                }), 400
-                
+        # Enhanced clip validation
+        validation_errors = []
+        max_clip_duration = 600  # 10 minutes
+        max_total_duration = 3600  # 60 minutes
+        total_duration = 0
+        
+        for i, clip in enumerate(clips):
             try:
-                start_time = float(clip.get('startTime', 0))
-                end_time = float(clip.get('endTime', 0))
-                if end_time <= start_time:
-                    return jsonify({
-                        'error': f'Invalid time range: start_time ({start_time}) must be less than end_time ({end_time})',
-                        'status': False
-                    }), 400
-                if end_time - start_time > 600:  # 10 minute limit per clip
-                    return jsonify({
-                        'error': f'Clip duration too long: maximum 10 minutes allowed (requested {end_time-start_time} seconds)',
-                        'status': False
-                    }), 400
-            except ValueError:
-                return jsonify({
-                    'error': 'Invalid startTime or endTime - must be numbers',
-                    'status': False
-                }), 400
+                if not isinstance(clip, dict):
+                    validation_errors.append(f"Clip {i}: Invalid format - expected dictionary")
+                    continue
+                    
+                video_id = clip.get('videoId')
+                if not video_id or not isinstance(video_id, str):
+                    validation_errors.append(f"Clip {i}: Missing or invalid videoId")
+                    continue
+                
+                try:
+                    start_time = float(clip.get('startTime', 0))
+                    end_time = float(clip.get('endTime', 0))
+                    
+                    if end_time <= start_time:
+                        validation_errors.append(f"Clip {i}: Invalid time range (start_time >= end_time)")
+                        continue
+                        
+                    clip_duration = end_time - start_time
+                    if clip_duration > max_clip_duration:
+                        validation_errors.append(f"Clip {i}: Duration too long (max {max_clip_duration}s)")
+                        continue
+                        
+                    total_duration += clip_duration
+                    
+                except ValueError:
+                    validation_errors.append(f"Clip {i}: Invalid startTime or endTime - must be numbers")
+                    continue
+                    
+            except Exception as e:
+                validation_errors.append(f"Clip {i}: Validation error - {str(e)}")
+                continue
 
+        if validation_errors:
+            return jsonify({
+                'error': 'Clip validation failed',
+                'details': validation_errors,
+                'status': False
+            }), 400
+            
+        if total_duration > max_total_duration:
+            return jsonify({
+                'error': f'Total duration too long (max {max_total_duration}s)',
+                'status': False
+            }), 400
+
+        # Setup working files
         timestamp = int(time.time())
         file_list_path = os.path.join(TMP_DIR, f'filelist_{timestamp}.txt')
         output_path = os.path.join(TMP_DIR, f'merged_clips_{timestamp}.mp4')
         processed_clips = []
         
         try:
-            # Process each clip with enhanced download and processing
-            for clip in clips:
-                video_id = clip.get('videoId')
+            # Process each clip with enhanced error handling
+            for clip_idx, clip in enumerate(clips):
+                video_id = clip['videoId']
                 start_time = float(clip.get('startTime', 0))
                 end_time = float(clip.get('endTime', 0))
                 
                 input_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
                 clip_output = os.path.join(TMP_DIR, f'clip_{video_id}_{int(start_time)}_{int(end_time)}.mp4')
                 
-                # Download and process with retries and validation
+                # Download and process with retries
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
-                        # Download video using enhanced method
-                        if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
-                            print(f"Downloading video {video_id} (attempt {attempt + 1})")
+                        logger.info(f"Processing clip {clip_idx+1}/{len(clips)} (attempt {attempt+1}) - {video_id}")
+                        
+                        # Download with validation
+                        if not os.path.exists(input_path) or not validate_video_file(input_path):
+                            logger.info(f"Downloading video {video_id}")
                             if not download_video_with_retries(video_id, input_path):
                                 raise Exception(f"Failed to download video {video_id}")
                         
-                        # Verify downloaded file more thoroughly
-                        if not os.path.exists(input_path):
-                            raise ValueError(f"Download failed: no file at {input_path}")
-                        if os.path.getsize(input_path) < 1024:
-                            raise ValueError(f"Downloaded file is too small: {input_path} (size: {os.path.getsize(input_path)} bytes)")
-                        
-                        # Process clip with enhanced ffmpeg handling
+                        # Process clip with multiple FFmpeg fallbacks
                         if not safe_ffmpeg_process(input_path, clip_output, start_time, end_time):
                             raise Exception(f"Failed to process clip {video_id}")
                         
-                        # Validate output clip
-                        if not os.path.exists(clip_output):
-                            raise Exception(f"Output clip not created: {clip_output}")
-                        if os.path.getsize(clip_output) < 1024:
-                            raise Exception(f"Output clip is too small: {clip_output}")
+                        # Validate output
+                        if not validate_video_file(clip_output):
+                            raise Exception(f"Invalid output clip: {clip_output}")
+                            
+                        # Verify duration
+                        clip_info = ffmpeg.probe(clip_output)
+                        actual_duration = float(clip_info['format']['duration'])
+                        expected_duration = end_time - start_time
                         
-                        # Check duration of output clip matches expected
-                        try:
-                            probe = ffmpeg.probe(clip_output)
-                            duration = float(probe['format']['duration'])
-                            expected_duration = end_time - start_time
-                            if abs(duration - expected_duration) > 2.0:  # Allow 2 second tolerance
-                                raise Exception(f"Clip duration mismatch: expected {expected_duration}s, got {duration}s")
-                        except Exception as e:
-                            print(f"Warning: Could not verify clip duration: {str(e)}")
+                        if abs(actual_duration - expected_duration) > 2.0:
+                            logger.warning(f"Duration mismatch for {video_id}: expected {expected_duration}s, got {actual_duration}s")
                         
                         processed_clips.append({
                             'path': clip_output,
-                            'info': clip
+                            'info': clip,
+                            'duration': actual_duration
                         })
                         break
                         
                     except Exception as e:
-                        print(f"Attempt {attempt + 1} failed: {str(e)}")
+                        logger.error(f"Attempt {attempt+1} failed for clip {video_id}: {str(e)}")
                         if attempt == max_retries - 1:
-                            raise
+                            raise Exception(f"Failed to process clip {video_id} after {max_retries} attempts: {str(e)}")
                         time.sleep(2 ** (attempt + 1))  # Exponential backoff
                         continue
 
             if not processed_clips:
                 raise ValueError("No clips were successfully processed")
-                
+
             # Create file list for concatenation
             with open(file_list_path, 'w', encoding='utf-8') as f:
                 for clip in processed_clips:
@@ -2205,38 +2643,15 @@ def merge_clips_route():
 
             time.sleep(1)  # Allow file handles to release
 
-            # Enhanced merge process with validation
+            # Enhanced merge with multiple methods
             merge_success = False
             merge_errors = []
             
-            for method in ['copy', 'encode']:
+            for method in ['copy', 'encode', 'resilient']:
                 try:
-                    if method == 'copy':
-                        cmd = [
-                            ffmpeg_path if ffmpeg_path else 'ffmpeg',
-                            '-f', 'concat',
-                            '-safe', '0',
-                            '-i', file_list_path,
-                            '-c', 'copy',  # Stream copy (fastest)
-                            '-movflags', 'faststart',  # Enable streaming
-                            '-y', output_path
-                        ]
-                    else:
-                        cmd = [
-                            ffmpeg_path if ffmpeg_path else 'ffmpeg',
-                            '-f', 'concat',
-                            '-safe', '0',
-                            '-i', file_list_path,
-                            '-c:v', 'libx264',
-                            '-preset', 'fast',
-                            '-crf', '23',
-                            '-c:a', 'aac',
-                            '-b:a', '128k',
-                            '-movflags', 'faststart',
-                            '-y', output_path
-                        ]
+                    cmd = build_ffmpeg_merge_command(file_list_path, output_path, method)
+                    logger.info(f"Attempting merge with method: {method}")
                     
-                    print(f"Attempting merge with method: {method}")
                     result = subprocess.run(
                         cmd,
                         capture_output=True,
@@ -2248,25 +2663,15 @@ def merge_clips_route():
                         raise Exception(result.stderr)
                     
                     # Validate merged output
-                    if not os.path.exists(output_path):
-                        raise Exception("Merged file not created")
-                    if os.path.getsize(output_path) < 1024:
-                        raise Exception("Merged file is too small")
-                    
-                    # Verify merged file can be read
-                    try:
-                        probe = ffmpeg.probe(output_path)
-                        if not probe.get('streams'):
-                            raise Exception("No streams found in merged file")
-                    except Exception as e:
-                        raise Exception(f"Failed to probe merged file: {str(e)}")
+                    if not validate_video_file(output_path):
+                        raise Exception("Merged file validation failed")
                     
                     merge_success = True
                     break
-                
+                    
                 except Exception as e:
                     merge_errors.append(f"{method} method failed: {str(e)}")
-                    print(f"Merge attempt failed: {str(e)}")
+                    logger.error(f"Merge attempt failed: {str(e)}")
                     if os.path.exists(output_path):
                         try:
                             os.remove(output_path)
@@ -2277,73 +2682,11 @@ def merge_clips_route():
             if not merge_success:
                 raise Exception(f"All merge methods failed:\n" + "\n".join(merge_errors))
             
-            # Enhanced S3 upload with progress tracking
+            # Upload to S3 with retries and progress tracking
             unique_filename = f"merged_{uuid.uuid4()}.mp4"
-            max_upload_attempts = 3
-            s3_url = None
+            s3_url = upload_to_s3_with_retries(output_path, unique_filename)
             
-            for attempt in range(max_upload_attempts):
-                try:
-                    print(f"Uploading to S3 (attempt {attempt + 1})")
-                    
-                    # Use multipart upload for large files
-                    if os.path.getsize(output_path) > 100 * 1024 * 1024:  # 100MB
-                        config = boto3.s3.transfer.TransferConfig(
-                            multipart_threshold=100 * 1024 * 1024,
-                            max_concurrency=10,
-                            multipart_chunksize=50 * 1024 * 1024,
-                            use_threads=True
-                        )
-                        s3_client.upload_file(
-                            output_path,
-                            AWS_S3_BUCKET,
-                            unique_filename,
-                            ExtraArgs={
-                                'ContentType': 'video/mp4',
-                                'ACL': 'public-read'
-                            },
-                            Config=config
-                        )
-                    else:
-                        s3_client.upload_file(
-                            output_path,
-                            AWS_S3_BUCKET,
-                            unique_filename,
-                            ExtraArgs={
-                                'ContentType': 'video/mp4',
-                                'ACL': 'public-read'
-                            }
-                        )
-                    
-                    # Generate presigned URL
-                    s3_url = s3_client.generate_presigned_url(
-                        'get_object',
-                        Params={
-                            'Bucket': AWS_S3_BUCKET,
-                            'Key': unique_filename
-                        },
-                        ExpiresIn=604800  # 7 days expiration
-                    )
-                    
-                    # Verify the upload
-                    try:
-                        head = s3_client.head_object(
-                            Bucket=AWS_S3_BUCKET,
-                            Key=unique_filename
-                        )
-                        if head.get('ContentLength', 0) != os.path.getsize(output_path):
-                            raise Exception("Uploaded file size mismatch")
-                    except Exception as e:
-                        raise Exception(f"Upload verification failed: {str(e)}")
-                    
-                    break
-                except Exception as upload_error:
-                    print(f"Upload attempt {attempt + 1} failed: {str(upload_error)}")
-                    if attempt == max_upload_attempts - 1:
-                        raise Exception(f"Failed to upload to S3 after {max_upload_attempts} attempts: {str(upload_error)}")
-                    time.sleep(5 * (attempt + 1))  # Exponential backoff
-                    continue
-
+            # Return success response
             return jsonify({
                 'message': 'Clips merged successfully',
                 's3Url': s3_url,
@@ -2352,25 +2695,24 @@ def merge_clips_route():
                 'status': True,
                 'fileNames3': unique_filename,
                 'fileSize': os.path.getsize(output_path),
-                'duration': sum(clip['endTime'] - clip['startTime'] for clip in clips)
+                'duration': sum(clip['duration'] for clip in processed_clips),
+                'metadata': {
+                    'clipCount': len(processed_clips),
+                    'processingTime': time.time() - timestamp,
+                    'format': get_video_metadata(output_path)
+                }
             })
 
         except Exception as e:
-            print(f"Error processing merge request: {str(e)}")
-            traceback.print_exc()
-            error_type = 'processing_error'
-            if 'bot' in str(e).lower() or 'sign in' in str(e).lower():
-                error_type = 'authentication_error'
-            elif 'ffmpeg' in str(e).lower():
-                error_type = 'processing_error'
-            elif 's3' in str(e).lower() or 'upload' in str(e).lower():
-                error_type = 'storage_error'
-                
+            error_type = classify_error(e)
+            logger.error(f"Error processing merge request: {str(e)}", exc_info=True)
+            
             return jsonify({
                 'error': str(e),
                 'status': False,
                 'type': error_type,
-                'suggestions': get_error_suggestions(error_type)
+                'suggestions': get_error_suggestions(error_type),
+                'traceId': str(uuid.uuid4())  # For support correlation
             }), 500
             
         finally:
@@ -2381,23 +2723,140 @@ def merge_clips_route():
                 *[clip['path'] for clip in processed_clips]
             ]
             
-            for file_path in cleanup_files:
-                try:
-                    if file_path and os.path.exists(file_path):
-                        os.remove(file_path)
-                        print(f"Cleaned up: {file_path}")
-                except Exception as e:
-                    print(f"Warning: Failed to cleanup {file_path}: {str(e)}")
+            cleanup_resources(cleanup_files)
 
     except Exception as e:
-        print(f"Unhandled exception in /merge-clips route:")
-        traceback.print_exc()
+        logger.critical(f"Unhandled exception in merge-clips: {str(e)}", exc_info=True)
         return jsonify({
-            'error': f"Internal server error: {str(e)}",
+            'error': 'Internal server error',
             'status': False,
             'type': 'unexpected_error',
+            'traceId': str(uuid.uuid4()),
             'suggestions': get_error_suggestions('unexpected_error')
         }), 500
+
+# Helper functions used in the route
+def build_ffmpeg_merge_command(file_list_path, output_path, method='copy'):
+    """Build appropriate FFmpeg command based on merge method"""
+    base_cmd = [
+        ffmpeg_path if ffmpeg_path else 'ffmpeg',
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', file_list_path
+    ]
+    
+    if method == 'copy':
+        return base_cmd + [
+            '-c', 'copy',
+            '-movflags', 'faststart',
+            '-y', output_path
+        ]
+    elif method == 'encode':
+        return base_cmd + [
+            '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-crf', '23',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-movflags', 'faststart',
+            '-y', output_path
+        ]
+    else:  # resilient
+        return base_cmd + [
+            '-err_detect', 'ignore_err',
+            '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-crf', '23',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-movflags', 'faststart',
+            '-y', output_path
+        ]
+
+def upload_to_s3_with_retries(file_path, object_name, max_attempts=3):
+    """Upload file to S3 with retries and progress tracking"""
+    for attempt in range(max_attempts):
+        try:
+            logger.info(f"Uploading to S3 (attempt {attempt+1})")
+            
+            # Use multipart upload for large files
+            config = None
+            if os.path.getsize(file_path) > 100 * 1024 * 1024:  # 100MB
+                config = boto3.s3.transfer.TransferConfig(
+                    multipart_threshold=100 * 1024 * 1024,
+                    max_concurrency=10,
+                    multipart_chunksize=50 * 1024 * 1024,
+                    use_threads=True
+                )
+            
+            s3_client.upload_file(
+                file_path,
+                AWS_S3_BUCKET,
+                object_name,
+                ExtraArgs={
+                    'ContentType': 'video/mp4',
+                    'ACL': 'public-read'
+                },
+                Config=config
+            )
+            
+            # Verify upload
+            head = s3_client.head_object(
+                Bucket=AWS_S3_BUCKET,
+                Key=object_name
+            )
+            if head.get('ContentLength', 0) != os.path.getsize(file_path):
+                raise Exception("Uploaded file size mismatch")
+            
+            # Generate presigned URL
+            return s3_client.generate_presigned_url(
+                'get_object',
+                Params={
+                    'Bucket': AWS_S3_BUCKET,
+                    'Key': object_name
+                },
+                ExpiresIn=604800  # 7 days
+            )
+            
+        except Exception as e:
+            logger.error(f"Upload attempt {attempt+1} failed: {str(e)}")
+            if attempt == max_attempts - 1:
+                raise Exception(f"Failed to upload to S3 after {max_attempts} attempts: {str(e)}")
+            time.sleep(5 * (attempt + 1))
+            continue
+
+def cleanup_resources(file_paths):
+    """Clean up temporary files with error handling"""
+    for file_path in file_paths:
+        try:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(f"Cleaned up: {file_path}")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup {file_path}: {str(e)}")
+
+def get_video_metadata(file_path):
+    """Get video metadata using ffprobe"""
+    try:
+        probe = ffmpeg.probe(file_path)
+        return {
+            'format': probe['format']['format_name'],
+            'duration': float(probe['format']['duration']),
+            'size': os.path.getsize(file_path),
+            'streams': [
+                {
+                    'codec_type': stream['codec_type'],
+                    'codec_name': stream['codec_name'],
+                    'width': stream.get('width'),
+                    'height': stream.get('height'),
+                    'bit_rate': stream.get('bit_rate')
+                }
+                for stream in probe['streams']
+            ]
+        }
+    except Exception as e:
+        logger.warning(f"Failed to get video metadata: {str(e)}")
+        return None
 
 def get_error_suggestions(error_type):
     """Return helpful suggestions based on error type"""
