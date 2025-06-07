@@ -2311,7 +2311,7 @@ def merge_clips_route():
                             unique_filename,
                             ExtraArgs={
                                 'ContentType': 'video/mp4',
-                                'ACL': 'public-read'
+                                
                             }
                         )
                     
