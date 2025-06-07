@@ -1231,65 +1231,180 @@ def download_via_ytdlp(video_id, input_path, use_cookies=False):
                     continue
     
     
-def emergency_fallback_download(video_id, input_path):
-    """Last-resort download methods when all else fails"""
+def emergency_fallback_download(video_id, input_path, max_retries=3):
+    """Enhanced last-resort download methods with multiple fallback strategies"""
     print("Attempting emergency fallback methods...")
     
-    # Method 1: Try through proxy
-    try:
+    # Method 1: Proxy rotation with retries
+    def try_proxy_services():
         proxy_services = [
-            f"https://youtube-proxy.example.com/download?id={video_id}",
-            f"https://api.r4pidapi.net/youtube?id={video_id}",
-            f"https://loader.to/api/download/?url=https://youtube.com/watch?v={video_id}"
+            # Free tier proxy services (rotated)
+            "https://www.youtubepp.com/download?id=",
+            "https://yt1s.com/api/ajaxSearch/index?q=",
+            "https://loader.to/ajax/download.php?url=",
+            # Premium proxy services (configure these in environment variables)
+            os.getenv('PREMIUM_PROXY_1', ''),
+            os.getenv('PREMIUM_PROXY_2', '')
         ]
         
-        for proxy_url in proxy_services:
-            try:
-                print(f"Trying proxy service: {proxy_url}")
-                response = requests.get(proxy_url, timeout=30)
-                if response.status_code == 200:
-                    with open(input_path, 'wb') as f:
-                        f.write(response.content)
-                    if os.path.getsize(input_path) > 1024:
-                        return True
-            except Exception:
-                continue
-    except Exception:
-        pass
-    
-    # Method 2: Try alternative extractors
-    try:
-        ydl_opts = {
-            'format': 'worst[ext=mp4]',
-            'outtmpl': input_path,
-            'quiet': True,
-            'force_generic_extractor': True,
-            'extractor_args': {
-                'youtube': {
-                    'skip': [],
-                    'player_client': ['android', 'web', 'ios']
-                }
-            }
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.5'
         }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([f'https://youtu.be/{video_id}'])
+        
+        for attempt in range(max_retries):
+            for proxy_url in proxy_services:
+                if not proxy_url:
+                    continue
+                    
+                try:
+                    full_url = f"{proxy_url}{video_id}" if "=" in proxy_url else f"{proxy_url}https://youtube.com/watch?v={video_id}"
+                    print(f"Attempt {attempt+1} with proxy: {full_url}")
+                    
+                    response = requests.get(
+                        full_url,
+                        headers=headers,
+                        timeout=30,
+                        allow_redirects=True
+                    )
+                    
+                    if response.status_code == 200:
+                        # Handle different response types
+                        if 'json' in response.headers.get('Content-Type', ''):
+                            data = response.json()
+                            if 'durl' in data:  # Some services return JSON with actual URL
+                                dl_url = data['durl']
+                                response = requests.get(dl_url, stream=True)
+                        
+                        with open(input_path, 'wb') as f:
+                            if hasattr(response, 'raw'):
+                                shutil.copyfileobj(response.raw, f)
+                            else:
+                                f.write(response.content)
+                        
+                        if os.path.getsize(input_path) > 1024:
+                            return True
+                except Exception as e:
+                    print(f"Proxy attempt failed: {str(e)}")
+                    continue
+            
+            if attempt < max_retries - 1:
+                wait_time = 2 ** (attempt + 1)
+                print(f"Waiting {wait_time} seconds before next proxy attempt...")
+                time.sleep(wait_time)
+        
+        return False
+
+    # Method 2: Alternative extractors with format fallbacks
+    def try_alternative_extractors():
+        format_priorities = [
+            'worst[ext=mp4]',  # Smallest file size
+            'bestvideo[height<=480]+bestaudio/best[height<=480]',
+            'bestvideo+bestaudio/best',
+            'mp4'  # Generic format
+        ]
+        
+        extractor_args = [
+            {'youtube': {'skip': [], 'player_client': ['android']}},
+            {'youtube': {'skip': [], 'player_client': ['web']}},
+            {'youtube': {'skip': ['dash'], 'player_skip': ['webpage']}},
+            {}  # No special args
+        ]
+        
+        for attempt in range(max_retries):
+            for fmt in format_priorities:
+                for ext_args in extractor_args:
+                    try:
+                        ydl_opts = {
+                            'format': fmt,
+                            'outtmpl': input_path,
+                            'quiet': True,
+                            'no_warnings': True,
+                            'force_generic_extractor': True,
+                            'extractor_args': ext_args,
+                            'http_headers': {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                                'Accept-Language': 'en-US,en;q=0.9'
+                            }
+                        }
+                        
+                        # Add proxy if available
+                        if os.getenv('YT_DL_PROXY'):
+                            ydl_opts['proxy'] = os.getenv('YT_DL_PROXY')
+                        
+                        print(f"Attempt {attempt+1} with format {fmt} and args {ext_args}")
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            ydl.download([f'https://youtu.be/{video_id}'])
+                        
+                        if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
+                            return True
+                    except Exception as e:
+                        print(f"Extractor attempt failed: {str(e)}")
+                        if os.path.exists(input_path):
+                            os.remove(input_path)
+                        continue
+            
+            if attempt < max_retries - 1:
+                time.sleep(5)  # Wait before next attempt
+        
+        return False
+
+    # Method 3: Direct download with multiple approaches
+    def try_direct_download():
+        download_methods = [
+            # wget with different user agents
+            lambda: subprocess.run([
+                'wget', '-O', input_path,
+                '-U', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                f'https://www.youtube.com/watch?v={video_id}'
+            ], check=True, timeout=60),
+            
+            # curl approach
+            lambda: subprocess.run([
+                'curl', '-L', '-o', input_path,
+                '-A', 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)',
+                f'https://www.youtube.com/watch?v={video_id}'
+            ], check=True, timeout=60),
+            
+            # aria2c for resumable downloads
+            lambda: subprocess.run([
+                'aria2c', '-o', input_path,
+                f'https://www.youtube.com/watch?v={video_id}'
+            ], check=True, timeout=60) if shutil.which('aria2c') else None
+        ]
+        
+        for method in download_methods:
+            try:
+                if method:
+                    method()
+                    if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
+                        return True
+            except Exception as e:
+                print(f"Direct download failed: {str(e)}")
+                if os.path.exists(input_path):
+                    os.remove(input_path)
+                continue
+        
+        return False
+
+    # Execute all methods with proper cleanup
+    try:
+        for method in [try_proxy_services, try_alternative_extractors, try_direct_download]:
+            try:
+                if method():
+                    return True
+            except Exception as e:
+                print(f"Emergency method {method.__name__} failed: {str(e)}")
+                continue
+            
+            # Cleanup between methods
+            if os.path.exists(input_path):
+                os.remove(input_path)
+    finally:
+        # Final verification
         if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
             return True
-    except Exception:
-        pass
-    
-    # Method 3: Try direct download
-    try:
-        direct_url = f"https://www.youtube.com/watch?v={video_id}"
-        cmd = [
-            'wget',
-            '-O', input_path,
-            direct_url
-        ]
-        subprocess.run(cmd, check=True, timeout=60)
-        return os.path.exists(input_path) and os.path.getsize(input_path) > 1024
-    except Exception:
-        pass
     
     return False
 
