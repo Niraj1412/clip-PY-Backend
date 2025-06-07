@@ -11,4 +11,4 @@ boto3==1.33.1
 yt-dlp==2025.03.31
 pytube>=15.0.0
 requests>=2.31.0
-
+flask_limiter==3.5.0
