@@ -2311,7 +2311,6 @@ def validate_and_refresh_cookies(force_refresh=False):
                     capture_output=True,
                     text=True
                 )
-                # If no "Sign in" or "unavailable" in stderr, cookies are valid
                 if ("Sign in" not in result.stderr and
                     "unavailable" not in result.stderr and
                     "private" not in result.stderr and
@@ -2359,6 +2358,11 @@ def validate_and_refresh_cookies(force_refresh=False):
                         return True
                     else:
                         print(f"New cookies from {browser} failed validation: {result2.stderr}")
+                        # Print first few lines of cookies for debug
+                        with open(COOKIES_FILE, 'r', encoding='utf-8') as f:
+                            print("First lines of cookies file:")
+                            for _ in range(5):
+                                print(f.readline().strip())
             except Exception as e:
                 print(f"Error generating cookies from {browser}: {str(e)}")
                 continue
@@ -2782,18 +2786,18 @@ def merge_clips_route():
                 
                 input_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
                 clip_output = os.path.join(TMP_DIR, f'clip_{video_id}_{int(start_time)}_{int(end_time)}.mp4')
-                
+
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
                         logger.info(f"Processing clip {clip_idx+1}/{len(clips)} (attempt {attempt+1}) - {video_id}")
-                
+
                         # Download with validation
                         if not os.path.exists(input_path) or not validate_video_file(input_path):
                             logger.info(f"Downloading video {video_id}")
                             if not download_video_with_retries(video_id, input_path):
                                 raise Exception(f"Failed to download video {video_id}")
-                
+
                         # Validate again after download
                         valid = validate_video_file(input_path)
                         if valid is not True:
@@ -2801,16 +2805,16 @@ def merge_clips_route():
                             if os.path.exists(input_path):
                                 os.remove(input_path)
                             raise Exception(f"Downloaded file is invalid: {valid}")
-                
+
                         # Process clip with multiple FFmpeg fallbacks
                         if not safe_ffmpeg_process(input_path, clip_output, start_time, end_time):
                             raise Exception(f"Failed to process clip {video_id}")
-                
+
                         # Validate output
                         valid_out = validate_video_file(clip_output)
                         if valid_out is not True:
                             raise Exception(f"Invalid output clip: {valid_out}")
-                
+
                         # ...rest of your code...
                         break
                     
