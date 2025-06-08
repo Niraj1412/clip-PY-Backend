@@ -21,6 +21,7 @@ from botocore.exceptions import NoCredentialsError
 import uuid
 import yt_dlp
 import traceback
+from pytube import YouTube  # Added pytube import
 
 load_dotenv()
 
@@ -1017,11 +1018,11 @@ def safe_ffmpeg_process(input_path, output_path, start_time, end_time):
 def download_via_rapidapi(video_id, input_path):
     """Download video using RapidAPI with improved headers and error handling"""
     try:
-        api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
+        api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"  # noqa: spell-check
         headers = {
-            'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',
-            'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+            'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',  # noqa: spell-check
+            'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com',  # noqa: spell-check
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'  # noqa: spell-check
         }
 
         response = requests.get(api_url, headers=headers, timeout=30)
@@ -1044,8 +1045,8 @@ def download_via_rapidapi(video_id, input_path):
 
         # Add referer header for download request
         download_headers = {
-            'Referer': 'https://www.youtube.com/',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+            'Referer': 'https://www.youtube.com/',  # noqa: spell-check
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'  # noqa: spell-check
         }
 
         print(f"Downloading video to path: {input_path}")
@@ -1144,6 +1145,54 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
                 pass
         return False
 
+def download_via_pytube(video_id, input_path):
+    """Download video using pytube with enhanced options"""
+    try:
+        # Create YouTube object
+        yt = YouTube(f'https://www.youtube.com/watch?v={video_id}')
+        
+        # Get the highest resolution stream (up to 720p)
+        stream = yt.streams.filter(
+            file_extension='mp4',
+            progressive=True,
+            resolution='720p'
+        ).order_by('resolution').desc().first()
+        
+        # If no 720p stream, get the highest available
+        if not stream:
+            stream = yt.streams.filter(
+                file_extension='mp4',
+                progressive=True
+            ).order_by('resolution').desc().first()
+        
+        if not stream:
+            raise Exception("No suitable video stream found")
+        
+        print(f"Downloading video {video_id} with resolution: {stream.resolution}")
+        
+        # Ensure download directory exists
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
+        
+        # Download the video
+        stream.download(
+            output_path=os.path.dirname(input_path),
+            filename=os.path.basename(input_path))
+        
+        # Verify download
+        if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
+            raise Exception("Downloaded file is too small or empty")
+            
+        return True
+    except Exception as e:
+        print(f"pytube download failed: {str(e)}")
+        # Clean up any partial files
+        if os.path.exists(input_path):
+            try:
+                os.remove(input_path)
+            except:
+                pass
+        return False
+
 def download_video(video_id, input_path):
     """Attempt to download video using multiple methods with prioritization"""
     # First try yt-dlp with cookies (most reliable if available)
@@ -1151,6 +1200,11 @@ def download_video(video_id, input_path):
         print("Attempting yt-dlp with cookies")
         if download_via_ytdlp(video_id, input_path, use_cookies=True):
             return True
+    
+    # Then try pytube
+    print("Attempting pytube")
+    if download_via_pytube(video_id, input_path):
+        return True
     
     # Then try RapidAPI
     print("Attempting RapidAPI")
@@ -1366,4 +1420,5 @@ def merge_clips_route():
         }), 500
         
 if __name__ == '__main__':
+
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)))
