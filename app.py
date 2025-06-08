@@ -1212,34 +1212,31 @@ def merge_clips_route():
                             
                             # Configure yt-dlp with cookies and extra options
                             ydl_opts = {
-                                'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]', # Limit to 720p to avoid throttling
-                                'outtmpl': input_path, # Save directly to the target path
-                                'quiet': False,  # Show output for better debugging
-                                'verbose': True,  # More detailed output
+                                'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
+                                'outtmpl': input_path,
+                                'quiet': False,
+                                'verbose': True,
                                 'noplaylist': True,
                                 'progress_hooks': [lambda d: print(f"yt-dlp: {d['status']}") if d['status'] in ['downloading', 'finished'] else None],
-                                'nocheckcertificate': True,  # Skip HTTPS certificate validation
-                                'ignoreerrors': True,  # Continue on download errors
-                                'no_warnings': False,  # Show warnings
-                                'retries': 10,  # Number of retries for HTTP requests
-                                'fragment_retries': 10,  # Number of retries for fragments
-                                'skip_unavailable_fragments': True,  # Skip unavailable fragments
-                                'extractor_retries': 5,  # Number of retries for extractor errors
-                                'file_access_retries': 5,  # Number of retries for file access
-                                'hls_prefer_native': True,  # Use native HLS downloader
-                                'hls_use_mpegts': True,  # Use MPEG-TS format for HLS
+                                'nocheckcertificate': True,
+                                'ignoreerrors': True,
+                                'no_warnings': False,
+                                'retries': 10,
+                                'fragment_retries': 10,
+                                'skip_unavailable_fragments': True,
+                                'extractor_retries': 5,
+                                'file_access_retries': 5,
+                                'hls_prefer_native': True,
+                                'hls_use_mpegts': True,
                                 'external_downloader_args': ['ffmpeg:-nostats', 'ffmpeg:-loglevel', 'ffmpeg:warning'],
-                                # Use browser cookies to mimic the browser, bypass age verification and geo-restriction
-                                'cookiesfrombrowser': (browser_to_try if 'browser_to_try' in locals() else 'chrome')
                             }
                             
                             # Add cookies file if available
                             if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 100:
                                 ydl_opts['cookiefile'] = cookies_file
                             else:
-                                # Fallback to simple browser specification without path if extraction failed
-                                ydl_opts['cookiesfrombrowser'] = 'chrome'
-                                # Try adding some common headers to look more like a browser
+                                # Only set cookiesfrombrowser if you do NOT have a cookies file
+                                ydl_opts['cookiesfrombrowser'] = browser_to_try  # e.g., 'chrome'
                                 ydl_opts['http_headers'] = {
                                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
