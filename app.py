@@ -1602,103 +1602,43 @@ def emergency_fallback_download(video_id, input_path, max_retries=3):
     return False
 
 
-def download_video(video_id, output_path, max_retries=3):
-    """
-    Enhanced video download function with comprehensive retry logic and validation
-    Attempts multiple download methods with proper error handling and validation
-    
-    Args:
-        video_id (str): YouTube video ID
-        output_path (str): Path to save the downloaded video
-        max_retries (int): Maximum number of retry attempts (default: 3)
+def download_video(video_id, output_path):
+    """Enhanced video download with proper cookie handling"""
+    try:
+        # First check if cookies are available and valid
+        cookies_valid = validate_and_refresh_cookies()
         
-    Returns:
-        bool: True if download succeeded, raises exception with detailed error if all attempts fail
-    """
-    # Validate output directory exists
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
-    # First check video availability and get detailed error if unavailable
-    availability = get_video_availability_details(video_id)
-    if not availability['available']:
-        raise Exception(f"Video unavailable: {availability.get('reason', 'Unknown reason')}")
-    
-    # Define download methods in order of preference with enhanced options
-    download_methods = [
-        # 1. Premium method with fresh cookies and age verification
-        lambda: premium_download(video_id, output_path),
-        # 2. yt-dlp with validated cookies and headers
-        lambda: download_via_ytdlp_with_cookies(video_id, output_path),
-        # 3. Proxy download with rotating IPs
-        lambda: proxy_download(video_id, output_path),
-        # 4. Embedded cookies fallback with age verification
-        lambda: embedded_cookies_download(video_id, output_path),
-        # 5. RapidAPI fallback
-        lambda: download_via_rapidapi(video_id, output_path),
-        # 6. Emergency methods including direct download attempts
-        lambda: emergency_fallback_download(video_id, output_path)
-    ]
-    
-    last_errors = []  # Track errors from all attempts
-    
-    for attempt in range(max_retries):
-        try:
-            print(f"Download attempt {attempt + 1}/{max_retries} for video {video_id}")
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+            'outtmpl': output_path,
+            'retries': 3,
+            'fragment_retries': 3,
+            'ignoreerrors': False,
+            'no_warnings': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.youtube.com/'
+            }
+        }
+        
+        # Add cookies if available
+        if cookies_valid and os.path.exists(COOKIES_FILE):
+            ydl_opts['cookiefile'] = COOKIES_FILE
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
             
-            # Try each download method until one succeeds
-            for method in download_methods:
-                method_name = method.__name__ if hasattr(method, '__name__') else method.__class__.__name__
-                print(f"Trying method: {method_name}")
-                
-                try:
-                    if method():
-                        # Enhanced validation
-                        validation_result = validate_video_file(output_path)
-                        if validation_result is True:
-                            print(f"Successfully downloaded video {video_id} using {method_name}")
-                            return True
-                        else:
-                            error_msg = f"Downloaded file failed validation: {validation_result}"
-                            print(error_msg)
-                            last_errors.append(f"{method_name}: {error_msg}")
-                            if os.path.exists(output_path):
-                                os.remove(output_path)
-                            continue
-                except Exception as e:
-                    error_msg = f"Method {method_name} failed: {str(e)}"
-                    print(error_msg)
-                    last_errors.append(error_msg)
-                    if os.path.exists(output_path):
-                        os.remove(output_path)
-                    continue
-            
-            # If we get here, all methods failed
-            raise Exception("All download methods failed for this attempt")
-            
-        except Exception as e:
-            print(f"Attempt {attempt + 1} failed: {str(e)}")
-            last_errors.append(str(e))
-            
-            if attempt == max_retries - 1:
-                # After final attempt, raise detailed error
-                detailed_error = "\n".join([
-                    f"Failed to download video {video_id} after {max_retries} attempts",
-                    "Possible reasons:",
-                    f"- Video may have restrictions: {availability.get('reason', 'Unknown')}",
-                    "- Your IP may be rate-limited by YouTube",
-                    "- Cookies may be invalid or insufficient for age-restricted content",
-                    "",
-                    "Attempt history:"
-                ] + [f"{i+1}. {err}" for i, err in enumerate(last_errors)])
-                
-                raise Exception(detailed_error)
-            
-            # Exponential backoff
-            wait_time = min(2 ** (attempt + 1), 30)  # Cap at 30 seconds
-            print(f"Waiting {wait_time} seconds before retry...")
-            time.sleep(wait_time)
-    
-    raise Exception(f"All download attempts failed for video {video_id}")
+            if not info.get('requested_downloads'):
+                raise Exception("Failed to request download")
+        
+        return True
+        
+    except Exception as e:
+        print(f"Download failed: {str(e)}")
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        return False
 
 def get_video_availability_details(video_id):
     """Get detailed info about video availability and restrictions"""
