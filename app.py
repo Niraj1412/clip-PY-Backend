@@ -1395,28 +1395,30 @@ def _attempt_downloads(video_id, input_path, formats, clients, urls, use_cookies
                     }
 
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=True)
+                        info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
                         
-                        if not info or not ydl._download_retcode == 0:
-                            raise Exception("Download failed or no data returned")
+                        # Add explicit error checking
+                        if info is None:
+                            raise Exception("Failed to extract video info - video may be unavailable")
+                            
+                        if info.get('availability') != 'public':
+                            raise Exception(f"Video is not publicly available. Status: {info.get('availability')}")
+                            
+                        if 'entries' in info:  # Playlist
+                            raise Exception("URL is a playlist, not a single video")
+                            
+                        return True
                         
-                        # Enhanced validation
-                        if os.path.exists(input_path) and os.path.getsize(input_path) > 1024*1024:  # 1MB min
-                            try:
-                                probe = ffmpeg.probe(input_path)
-                                if probe.get('streams'):
-                                    return True
-                            except:
-                                os.remove(input_path)
-                                continue
-                    
                 except yt_dlp.utils.DownloadError as e:
                     if "Video unavailable" in str(e):
-                        print(f"Video unavailable - may be private/removed: {e}")
-                        raise
-                    continue
-                except Exception as e:
-                    continue
+                        # Get more specific error message
+                        if "This video is private" in str(e):
+                            raise Exception("Video is private - requires login")
+                        elif "This video is not available" in str(e):
+                            raise Exception("Video is geo-restricted or removed")
+                        else:
+                            raise Exception(f"Video unavailable: {str(e)}")
+                    raise
 
     raise Exception("All download attempts failed")
     
@@ -2489,12 +2491,48 @@ def has_sufficient_disk_space(min_free_gb=5):
     except Exception as e:
         logger.error(f"Error checking disk space: {str(e)}")
         return False
+    
+def check_video_availability(video_id):
+    """Check if a video is available before attempting download"""
+    try:
+        ydl_opts = {
+            'skip_download': True,
+            'quiet': True,
+            'ignoreerrors': False
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
+            
+            if not info:
+                return False, "No video information available"
+                
+            availability = info.get('availability')
+            if availability != 'public':
+                return False, f"Video is {availability}"
+                
+            return True, "Video is available"
+            
+    except Exception as e:
+        return False, str(e)
 
     
 @app.route('/merge-clips', methods=['POST'])
 @limiter.limit("5 per minute")  # Add rate limiting
 def merge_clips_route():
     try:
+        data = request.get_json()
+        clips = data.get('clips', [])
+        
+        # First check all videos are available
+        for clip in clips:
+            video_id = clip.get('videoId')
+            available, reason = check_video_availability(video_id)
+            if not available:
+                return jsonify({
+                    'error': f'Video {video_id} is not available: {reason}',
+                    'status': False
+                }), 400
         # Initial system checks
         health_checks = {
             'ffmpeg_available': ffmpeg_available,
