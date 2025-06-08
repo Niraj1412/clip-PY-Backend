@@ -1174,13 +1174,11 @@ def merge_clips_route():
                                             # Create extract command
                                             extract_cmd = [
                                                 sys.executable, "-m", "yt_dlp", 
-                                                "--cookies-from-browser"
+                                                "--cookies-from-browser", browser_to_try  # Simplified command
                                             ]
                                             
                                             if browser_path:
-                                                extract_cmd.append(f"{browser_to_try}:{browser_path}")
-                                            else:
-                                                extract_cmd.append(browser_to_try)
+                                                extract_cmd.extend(["--browser-path", browser_path])
                                                 
                                             extract_cmd.extend([
                                                 "--cookies", cookies_file,
@@ -1234,8 +1232,8 @@ def merge_clips_route():
                             # Add cookies file if available
                             if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 100:
                                 ydl_opts['cookiefile'] = cookies_file
-                            elif browser_to_try:
-                                # Only set the browser name, NOT a colon/path
+                            else:
+                                # Only set cookiesfrombrowser if you do NOT have a cookies file
                                 ydl_opts['cookiesfrombrowser'] = browser_to_try  # e.g., 'chrome'
                                 ydl_opts['http_headers'] = {
                                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
