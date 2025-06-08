@@ -1202,8 +1202,8 @@ def merge_clips_route():
                             if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 100:
                                 ydl_opts['cookiefile'] = cookies_file
                             else:
-                                # Only set cookiesfrombrowser if you do NOT have a cookies file
-                                ydl_opts['cookiesfrombrowser'] = (browser_to_try,)  # Note the tuple format
+                                # In Docker/cloud, do NOT try to extract cookies from browser, just proceed without cookies
+                                print("No valid cookies file found and cannot extract from browser in Docker/cloud. Proceeding without cookies.")
                                 ydl_opts['http_headers'] = {
                                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
