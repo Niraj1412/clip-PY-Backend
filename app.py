@@ -1091,11 +1091,12 @@ def merge_clips_route():
                         # --- Fallback to yt-dlp --- 
                         try:
                             # Path to store cookies
+                            # Path to store cookies
                             cookies_file = os.path.join(BASE_DIR, 'youtube_cookies.txt')
-                            
-                            # Check if we already have a cookies file
+
+                            # In Docker/cloud, do NOT try to extract cookies from browser, just proceed without cookies
                             if not os.path.exists(cookies_file) or os.path.getsize(cookies_file) < 100:
-                                print(f"No valid cookies file found at {cookies_file}, attempting to extract from browser")
+                                print("No valid cookies file found and cannot extract from browser in Docker/cloud. Proceeding without cookies.")
                                 # Try to extract cookies from browser if needed
                                 try:
                                     # Try browsers based on platform
@@ -1202,7 +1203,6 @@ def merge_clips_route():
                             if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 100:
                                 ydl_opts['cookiefile'] = cookies_file
                             else:
-                                # In Docker/cloud, do NOT try to extract cookies from browser, just proceed without cookies
                                 print("No valid cookies file found and cannot extract from browser in Docker/cloud. Proceeding without cookies.")
                                 ydl_opts['http_headers'] = {
                                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -1218,7 +1218,7 @@ def merge_clips_route():
                                     'sec-ch-ua': '" Not A;Brand";v="99", "Chromium";v="91"',
                                     'sec-ch-ua-mobile': '?0'
                                 }
-                            
+                                                        
                             try:
                                 print(f"Starting yt-dlp download for video {video_id}")
                                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
