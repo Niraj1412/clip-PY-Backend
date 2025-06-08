@@ -1135,56 +1135,14 @@ def merge_clips_route():
                                     for browser_to_try in browsers_to_try:
                                         print(f"Attempting to extract cookies from {browser_to_try}")
                                         try:
-                                            # Define platform-specific browser profile paths
-                                            platform_paths = {
-                                                'win32': {
-                                                    'chrome': os.path.expanduser('~\\AppData\\Local\\Google\\Chrome\\User Data'),
-                                                    'firefox': os.path.expanduser('~\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles'),
-                                                    'edge': os.path.expanduser('~\\AppData\\Local\\Microsoft\\Edge\\User Data'),
-                                                    'brave': os.path.expanduser('~\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data'),
-                                                },
-                                                'linux': {
-                                                    'chrome': os.path.expanduser('~/.config/google-chrome'),
-                                                    'chrome-flatpak': os.path.expanduser('~/.var/app/com.google.Chrome/config/google-chrome'),
-                                                    'firefox': os.path.expanduser('~/.mozilla/firefox'),
-                                                    'brave': os.path.expanduser('~/.config/BraveSoftware/Brave-Browser'),
-                                                },
-                                                'darwin': {  # macOS
-                                                    'chrome': os.path.expanduser('~/Library/Application Support/Google/Chrome'),
-                                                    'firefox': os.path.expanduser('~/Library/Application Support/Firefox/Profiles'),
-                                                    'safari': os.path.expanduser('~/Library/Safari'),
-                                                    'brave': os.path.expanduser('~/Library/Application Support/BraveSoftware/Brave-Browser'),
-                                                }
-                                            }
-                                            
-                                            # Check first for custom path, then default path
-                                            browser_path = None
-                                            
-                                            # First check for custom path
-                                            if browser_to_try in custom_browser_paths and os.path.exists(custom_browser_paths[browser_to_try]):
-                                                browser_path = custom_browser_paths[browser_to_try]
-                                                print(f"Found custom browser profile at {browser_path}")
-                                            # Then check for default path
-                                            elif sys.platform in platform_paths and browser_to_try in platform_paths[sys.platform]:
-                                                path = platform_paths[sys.platform][browser_to_try]
-                                                if os.path.exists(path):
-                                                    browser_path = path
-                                                    print(f"Found default browser profile at {path}")
-                                            
-                                            # Create extract command
+                                            # Create extract command with simplified cookie extraction
                                             extract_cmd = [
                                                 sys.executable, "-m", "yt_dlp", 
-                                                "--cookies-from-browser", browser_to_try  # Simplified command
-                                            ]
-                                            
-                                            if browser_path:
-                                                extract_cmd.extend(["--browser-path", browser_path])
-                                                
-                                            extract_cmd.extend([
+                                                "--cookies-from-browser", browser_to_try,
                                                 "--cookies", cookies_file,
                                                 "--skip-download",
-                                                "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Use a popular video to test
-                                            ])
+                                                "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+                                            ]
                                             
                                             print(f"Running cookie extraction: {' '.join(extract_cmd)}")
                                             result = subprocess.run(
@@ -1234,7 +1192,7 @@ def merge_clips_route():
                                 ydl_opts['cookiefile'] = cookies_file
                             else:
                                 # Only set cookiesfrombrowser if you do NOT have a cookies file
-                                ydl_opts['cookiesfrombrowser'] = browser_to_try  # e.g., 'chrome'
+                                ydl_opts['cookiesfrombrowser'] = (browser_to_try,)  # Note the tuple format
                                 ydl_opts['http_headers'] = {
                                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
