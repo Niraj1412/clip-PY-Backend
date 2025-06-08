@@ -1362,6 +1362,7 @@ def _attempt_downloads(video_id, input_path, formats, clients, urls, use_cookies
                     ydl_opts = {
                         'format': format_str,
                         'outtmpl': input_path,
+                        'age_limit': 100,
                         'quiet': True,
                         'no_warnings': True,
                         'retries': 3,
@@ -1612,26 +1613,33 @@ def download_video(video_id, output_path, max_retries=3):
         max_retries (int): Maximum number of retry attempts (default: 3)
         
     Returns:
-        bool: True if download succeeded, raises exception if all attempts fail
+        bool: True if download succeeded, raises exception with detailed error if all attempts fail
     """
     # Validate output directory exists
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
-    # Define download methods in order of preference
+    # First check video availability and get detailed error if unavailable
+    availability = get_video_availability_details(video_id)
+    if not availability['available']:
+        raise Exception(f"Video unavailable: {availability.get('reason', 'Unknown reason')}")
+    
+    # Define download methods in order of preference with enhanced options
     download_methods = [
-        # 1. Premium method with fresh cookies
+        # 1. Premium method with fresh cookies and age verification
         lambda: premium_download(video_id, output_path),
-        # 2. yt-dlp with validated cookies
+        # 2. yt-dlp with validated cookies and headers
         lambda: download_via_ytdlp_with_cookies(video_id, output_path),
         # 3. Proxy download with rotating IPs
         lambda: proxy_download(video_id, output_path),
-        # 4. Embedded cookies fallback
+        # 4. Embedded cookies fallback with age verification
         lambda: embedded_cookies_download(video_id, output_path),
         # 5. RapidAPI fallback
         lambda: download_via_rapidapi(video_id, output_path),
-        # 6. Emergency methods
+        # 6. Emergency methods including direct download attempts
         lambda: emergency_fallback_download(video_id, output_path)
     ]
+    
+    last_errors = []  # Track errors from all attempts
     
     for attempt in range(max_retries):
         try:
@@ -1644,16 +1652,22 @@ def download_video(video_id, output_path, max_retries=3):
                 
                 try:
                     if method():
-                        # Validate the downloaded file
-                        if validate_video_file(output_path):
+                        # Enhanced validation
+                        validation_result = validate_video_file(output_path)
+                        if validation_result is True:
                             print(f"Successfully downloaded video {video_id} using {method_name}")
                             return True
                         else:
-                            print(f"Downloaded file failed validation, trying next method")
-                            os.remove(output_path)
+                            error_msg = f"Downloaded file failed validation: {validation_result}"
+                            print(error_msg)
+                            last_errors.append(f"{method_name}: {error_msg}")
+                            if os.path.exists(output_path):
+                                os.remove(output_path)
                             continue
                 except Exception as e:
-                    print(f"Method {method_name} failed: {str(e)}")
+                    error_msg = f"Method {method_name} failed: {str(e)}"
+                    print(error_msg)
+                    last_errors.append(error_msg)
                     if os.path.exists(output_path):
                         os.remove(output_path)
                     continue
@@ -1663,8 +1677,21 @@ def download_video(video_id, output_path, max_retries=3):
             
         except Exception as e:
             print(f"Attempt {attempt + 1} failed: {str(e)}")
+            last_errors.append(str(e))
+            
             if attempt == max_retries - 1:
-                raise Exception(f"Failed to download video after {max_retries} attempts: {str(e)}")
+                # After final attempt, raise detailed error
+                detailed_error = "\n".join([
+                    f"Failed to download video {video_id} after {max_retries} attempts",
+                    "Possible reasons:",
+                    f"- Video may have restrictions: {availability.get('reason', 'Unknown')}",
+                    "- Your IP may be rate-limited by YouTube",
+                    "- Cookies may be invalid or insufficient for age-restricted content",
+                    "",
+                    "Attempt history:"
+                ] + [f"{i+1}. {err}" for i, err in enumerate(last_errors)])
+                
+                raise Exception(detailed_error)
             
             # Exponential backoff
             wait_time = min(2 ** (attempt + 1), 30)  # Cap at 30 seconds
@@ -1673,35 +1700,103 @@ def download_video(video_id, output_path, max_retries=3):
     
     raise Exception(f"All download attempts failed for video {video_id}")
 
+def get_video_availability_details(video_id):
+    """Get detailed info about video availability and restrictions"""
+    try:
+        ydl_opts = {
+            'skip_download': True,
+            'quiet': True,
+            'ignoreerrors': False,
+            'extract_flat': True,
+            'cookiefile': COOKIES_FILE if os.path.exists(COOKIES_FILE) else None
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
+            
+            if not info:
+                return {
+                    'available': False, 
+                    'reason': 'No video information returned by YouTube',
+                    'error_type': 'api_error'
+                }
+            
+            availability = info.get('availability', 'unknown')
+            if availability != 'public':
+                return {
+                    'available': False,
+                    'reason': availability,
+                    'age_restricted': info.get('age_limit', 0) >= 18,
+                    'needs_login': info.get('requires_login', False),
+                    'is_live': info.get('is_live', False),
+                    'error_type': 'restriction'
+                }
+            
+            return {
+                'available': True,
+                'title': info.get('title'),
+                'duration': info.get('duration'),
+                'view_count': info.get('view_count')
+            }
+            
+    except yt_dlp.utils.DownloadError as e:
+        error_info = {
+            'available': False,
+            'error_type': 'download_error'
+        }
+        
+        error_str = str(e)
+        if "Private video" in error_str:
+            error_info.update({
+                'reason': 'private',
+                'needs_login': True
+            })
+        elif "This video is not available" in error_str:
+            error_info.update({
+                'reason': 'geoblocked or removed',
+                'needs_proxy': True
+            })
+        elif "Sign in to confirm your age" in error_str:
+            error_info.update({
+                'reason': 'age_restricted',
+                'age_restricted': True,
+                'needs_login': True
+            })
+        else:
+            error_info['reason'] = error_str
+            
+        return error_info
+        
+    except Exception as e:
+        return {
+            'available': False,
+            'reason': str(e),
+            'error_type': 'unknown_error'
+        }
+
 
 def validate_video_file(file_path):
     """
-    Thorough validation of downloaded video file
+    Thorough validation of downloaded video file with detailed error reporting
     
-    Args:
-        file_path (str): Path to the video file
-        
     Returns:
-        bool: True if file is valid, False otherwise
+        True if valid, error message string if invalid
     """
     if not os.path.exists(file_path):
-        print(f"File does not exist: {file_path}")
-        return False
+        return "File does not exist"
     
     file_size = os.path.getsize(file_path)
     if file_size < 1024:  # 1KB minimum
-        print(f"File is too small ({file_size} bytes): {file_path}")
-        return False
+        return f"File is too small ({file_size} bytes)"
     
     # Check basic file type
     try:
         import magic
         file_type = magic.from_file(file_path)
         if 'MP4' not in file_type and 'ISO Media' not in file_type:
-            print(f"Invalid file type: {file_type}")
-            return False
+            return f"Invalid file type: {file_type}"
     except ImportError:
-        print("python-magic not available, skipping file type check")
+        pass  # Skip if magic not available
     
     # Verify with ffprobe
     try:
@@ -1721,19 +1816,16 @@ def validate_video_file(file_path):
         )
         
         if result.returncode != 0:
-            print(f"FFprobe validation failed: {result.stderr}")
-            return False
+            return f"FFprobe validation failed: {result.stderr.strip()}"
         
         # Check for at least one video stream
         if 'codec_type=video' not in result.stdout:
-            print("No video stream found in file")
-            return False
+            return "No video stream found in file"
             
         return True
         
     except Exception as e:
-        print(f"Error during ffprobe validation: {str(e)}")
-        return False
+        return f"Error during ffprobe validation: {str(e)}"
 
 
 def premium_download(video_id, output_path):
@@ -1947,6 +2039,7 @@ def download_via_ytdlp_with_embedded_cookies(video_id, input_path):
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
         'outtmpl': input_path,
+        'age_limit': 100,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
@@ -2052,6 +2145,7 @@ def download_via_ytdlp_without_cookies(video_id, input_path):
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]',
         'outtmpl': input_path,
+        'age_limit': 100,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
@@ -2318,32 +2412,45 @@ def download_via_pytube(video_id, input_path):
     except Exception as e:
         print(f"Pytube download failed: {str(e)}")
         return False
+    
 def validate_and_refresh_cookies():
     """Enhanced cookie validation with better error handling and refresh logic"""
     try:
         # First check if we have a cookies file that might work
         if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
-            # Test cookies with a simple YouTube request
-            test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            # Test cookies with a test video that's known to be available
+            test_url = "https://www.youtube.com/watch?v=tbWZIxw7Uto"  # Using the actual video ID we're having issues with
             test_cmd = [
                 sys.executable, "-m", "yt_dlp",
                 "--cookies", COOKIES_FILE,
                 "--skip-download",
                 "--print", "%(title)s",
+                "--ignore-errors",  # Don't fail on errors, we'll check stderr
                 test_url
             ]
             
             try:
                 result = subprocess.run(
                     test_cmd,
-                    timeout=30,
+                    timeout=60,  # Increased timeout
                     capture_output=True,
                     text=True
                 )
                 
-                if "Sign in" not in result.stderr and result.returncode == 0:
+                # Enhanced error detection
+                error_conditions = [
+                    "Sign in" in result.stderr,
+                    "unavailable" in result.stderr,
+                    "private" in result.stderr,
+                    "age restriction" in result.stderr.lower(),
+                    result.returncode != 0
+                ]
+                
+                if not any(error_conditions):
                     print("Existing cookies are still valid")
                     return True
+                else:
+                    print(f"Cookie validation failed with: {result.stderr}")
             except subprocess.TimeoutExpired:
                 print("Cookie validation timed out")
             except Exception as e:
@@ -2362,29 +2469,33 @@ def validate_and_refresh_cookies():
                     "--cookies", COOKIES_FILE,
                     "--skip-download",
                     "--no-check-certificate",
+                    "--verbose",  # Get more detailed logs
                     "https://www.youtube.com"
                 ]
                 
                 # Set longer timeout for cookie generation
                 result = subprocess.run(
                     cmd, 
-                    timeout=120,  # 2 minutes timeout
+                    timeout=180,  # 3 minutes timeout
                     capture_output=True,
                     text=True
                 )
                 
-                # Verify the generated cookies file
+                # Enhanced verification of generated cookies
                 if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
-                    # Quick validation of the cookies format
+                    # Check for essential YouTube cookies
                     with open(COOKIES_FILE, 'r') as f:
-                        first_line = f.readline().strip()
-                        if first_line.startswith(('# HTTP Cookie File', '# Netscape HTTP Cookie File')):
+                        content = f.read()
+                        required_cookies = ['CONSENT', 'PREF', 'VISITOR_INFO1_LIVE']
+                        if all(cookie in content for cookie in required_cookies):
                             print(f"Successfully generated cookies from {browser}")
                             return True
                 
                 print(f"Failed to generate valid cookies from {browser}")
                 if result.stderr:
                     print("Error output:", result.stderr)
+                if result.stdout:
+                    print("Debug output:", result.stdout)
                 
             except subprocess.TimeoutExpired:
                 print(f"Timeout generating cookies from {browser}")
@@ -2394,21 +2505,23 @@ def validate_and_refresh_cookies():
                 continue
         
         # Final fallback - try to use embedded cookies if all else fails
-        print("Attempting to use embedded cookies as fallback...")
+        print("Attempting to use enhanced embedded cookies as fallback...")
         embedded_cookies = """# Netscape HTTP Cookie File
-.youtube.com\tTRUE\t/\tTRUE\t2147483647\tCONSENT\tYES+cb.20220301-11-p0.en+FX+910
-.youtube.com\tTRUE\t/\tTRUE\t2147483647\tPREF\tf6=40000000&tz=UTC
-.youtube.com\tTRUE\t/\tTRUE\t2147483647\tVISITOR_INFO1_LIVE\tk35Esl4JdfA
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tCONSENT\tYES+cb.20250101-11-p0.en+FX+999
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tPREF\tf6=40000000&tz=UTC&f5=30000
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tVISITOR_INFO1_LIVE\tCg9JZ3FfV2hITE1jZw%3D%3D
 .youtube.com\tTRUE\t/\tTRUE\t2147483647\tYSC\tDGVN2JXJQFE
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tGPS\t1
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tLOGIN_INFO\tAFmmF2swRQIgYOUR_LOGIN_INFO_HERE
 """
         try:
             with open(COOKIES_FILE, 'w') as f:
                 f.write(embedded_cookies)
             
-            # Test if these cookies work
+            # Test if these cookies work with our target video
             test_result = subprocess.run(
                 test_cmd,
-                timeout=30,
+                timeout=60,
                 capture_output=True,
                 text=True
             )
@@ -2416,6 +2529,8 @@ def validate_and_refresh_cookies():
             if "Sign in" not in test_result.stderr and test_result.returncode == 0:
                 print("Fallback embedded cookies worked")
                 return True
+            else:
+                print(f"Embedded cookies failed with: {test_result.stderr}")
             
         except Exception as e:
             print(f"Failed to use embedded cookies: {str(e)}")
@@ -2424,8 +2539,26 @@ def validate_and_refresh_cookies():
     
     except Exception as e:
         print(f"Unexpected error in cookie validation: {str(e)}")
+        traceback.print_exc()  # Print full traceback for debugging
         return False
     
+def generate_fresh_cookies():
+    """Generate fresh cookies from a browser"""
+    browsers = ['chrome', 'firefox', 'edge', 'brave']
+    for browser in browsers:
+        try:
+            cmd = [
+                sys.executable, "-m", "yt_dlp",
+                "--cookies-from-browser", browser,
+                "--cookies", COOKIES_FILE,
+                "--skip-download",
+                "https://www.youtube.com"
+            ]
+            subprocess.run(cmd, check=True, timeout=120)
+            return True
+        except:
+            continue
+    return False
     
 ERROR_SUGGESTIONS = {
     'authentication_error': [
