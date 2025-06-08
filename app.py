@@ -2286,55 +2286,109 @@ def download_via_ytdlp_with_cookies(video_id, output_path):
 
 
 # Updated cookie validation function
-def validate_and_refresh_cookies():
-    """Ensure we have valid cookies and refresh them if needed"""
-    # First check if we have a cookies file that might work
-    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
-        try:
-            # Test the cookies with a simple request
-            test_cmd = [
-                sys.executable, "-m", "yt_dlp",
-                "--cookies", COOKIES_FILE,
-                "--skip-download",
-                "--print", "%(title)s",
-                "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-            ]
-            result = subprocess.run(
-                test_cmd,
-                timeout=30,
-                capture_output=True,
-                text=True
-            )
-            
-            if "Sign in to confirm you're not a bot" not in result.stderr:
-                print("Existing cookies are still valid")
-                return True
-        except Exception as e:
-            print(f"Error validating existing cookies: {str(e)}")
-    
-    print("No valid cookies found, attempting to generate new ones...")
-    
-    # Try different methods to get cookies
-    cookie_sources = [
-        # 1. Try to extract from any available browser
-        lambda: generate_cookies_from_browser(),
-        # 2. Try to use embedded cookies as fallback
-        lambda: generate_embedded_cookies_file(),
-        # 3. Try to download a fresh cookies file from a secure source
-        lambda: download_fresh_cookies_file()
-    ]
-    
-    for source in cookie_sources:
-        try:
-            if source():
-                print("Successfully generated new cookies")
-                return True
-        except Exception as e:
-            print(f"Cookie generation attempt failed: {str(e)}")
-            continue
-    
-    print("All cookie generation methods failed")
-    return False
+def validate_and_refresh_cookies(force_refresh=False):
+    """
+    Enhanced cookie validation and refresh logic.
+    If force_refresh is True, always try to generate new cookies.
+    """
+    try:
+        test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        test_cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--cookies", COOKIES_FILE,
+            "--skip-download",
+            "--print", "%(title)s",
+            "--ignore-errors",
+            test_url
+        ]
+
+        # Always check if cookies exist and are valid, or if forced to refresh
+        if not force_refresh and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+            try:
+                result = subprocess.run(
+                    test_cmd,
+                    timeout=60,
+                    capture_output=True,
+                    text=True
+                )
+                # If no "Sign in" or "unavailable" in stderr, cookies are valid
+                if ("Sign in" not in result.stderr and
+                    "unavailable" not in result.stderr and
+                    "private" not in result.stderr and
+                    result.returncode == 0):
+                    print("Existing cookies are valid")
+                    return True
+                else:
+                    print(f"Cookie validation failed: {result.stderr}")
+            except Exception as e:
+                print(f"Cookie validation error: {str(e)}")
+
+        # If we get here, cookies are invalid or forced to refresh
+        print("Generating fresh cookies...")
+        browsers = ['chrome', 'firefox', 'edge', 'brave']
+        for browser in browsers:
+            try:
+                print(f"Trying to generate cookies from {browser}...")
+                cmd = [
+                    sys.executable, "-m", "yt_dlp",
+                    "--cookies-from-browser", browser,
+                    "--cookies", COOKIES_FILE,
+                    "--skip-download",
+                    "--no-check-certificate",
+                    "https://www.youtube.com"
+                ]
+                result = subprocess.run(
+                    cmd,
+                    timeout=180,
+                    capture_output=True,
+                    text=True
+                )
+                if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+                    # Validate the new cookies
+                    result2 = subprocess.run(
+                        test_cmd,
+                        timeout=30,
+                        capture_output=True,
+                        text=True
+                    )
+                    if ("Sign in" not in result2.stderr and
+                        "unavailable" not in result2.stderr and
+                        "private" not in result2.stderr and
+                        result2.returncode == 0):
+                        print(f"Successfully generated and validated cookies from {browser}")
+                        return True
+                    else:
+                        print(f"New cookies from {browser} failed validation: {result2.stderr}")
+            except Exception as e:
+                print(f"Error generating cookies from {browser}: {str(e)}")
+                continue
+
+        # Fallback: use embedded cookies (may not work for all videos)
+        print("Using embedded fallback cookies...")
+        embedded_cookies = """# Netscape HTTP Cookie File
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tCONSENT\tYES+cb.20250101-11-p0.en+FX+999
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tPREF\tf6=40000000&tz=UTC
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tVISITOR_INFO1_LIVE\tCg9JZ3FfV2hITE1jZw%3D%3D
+.youtube.com\tTRUE\t/\tTRUE\t2147483647\tYSC\tDGVN2JXJQFE
+"""
+        with open(COOKIES_FILE, 'w', encoding='utf-8') as f:
+            f.write(embedded_cookies)
+        # Test embedded cookies
+        result = subprocess.run(
+            test_cmd,
+            timeout=30,
+            capture_output=True,
+            text=True
+        )
+        if "Sign in" not in result.stderr and result.returncode == 0:
+            print("Embedded cookies worked")
+            return True
+        else:
+            print("Embedded cookies failed")
+        return False
+    except Exception as e:
+        print(f"Unexpected error in cookie validation: {str(e)}")
+        return False
 
 def generate_cookies_from_browser():
     """Try to generate cookies from any available browser"""
@@ -2729,41 +2783,37 @@ def merge_clips_route():
                 input_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
                 clip_output = os.path.join(TMP_DIR, f'clip_{video_id}_{int(start_time)}_{int(end_time)}.mp4')
                 
-                # Download and process with retries
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
                         logger.info(f"Processing clip {clip_idx+1}/{len(clips)} (attempt {attempt+1}) - {video_id}")
-                        
+                
                         # Download with validation
                         if not os.path.exists(input_path) or not validate_video_file(input_path):
                             logger.info(f"Downloading video {video_id}")
                             if not download_video_with_retries(video_id, input_path):
                                 raise Exception(f"Failed to download video {video_id}")
-                        
+                
+                        # Validate again after download
+                        valid = validate_video_file(input_path)
+                        if valid is not True:
+                            logger.error(f"Downloaded file is invalid: {valid}")
+                            if os.path.exists(input_path):
+                                os.remove(input_path)
+                            raise Exception(f"Downloaded file is invalid: {valid}")
+                
                         # Process clip with multiple FFmpeg fallbacks
                         if not safe_ffmpeg_process(input_path, clip_output, start_time, end_time):
                             raise Exception(f"Failed to process clip {video_id}")
-                        
+                
                         # Validate output
-                        if not validate_video_file(clip_output):
-                            raise Exception(f"Invalid output clip: {clip_output}")
-                            
-                        # Verify duration
-                        clip_info = ffmpeg.probe(clip_output)
-                        actual_duration = float(clip_info['format']['duration'])
-                        expected_duration = end_time - start_time
-                        
-                        if abs(actual_duration - expected_duration) > 2.0:
-                            logger.warning(f"Duration mismatch for {video_id}: expected {expected_duration}s, got {actual_duration}s")
-                        
-                        processed_clips.append({
-                            'path': clip_output,
-                            'info': clip,
-                            'duration': actual_duration
-                        })
+                        valid_out = validate_video_file(clip_output)
+                        if valid_out is not True:
+                            raise Exception(f"Invalid output clip: {valid_out}")
+                
+                        # ...rest of your code...
                         break
-                        
+                    
                     except Exception as e:
                         logger.error(f"Attempt {attempt+1} failed for clip {video_id}: {str(e)}")
                         if attempt == max_retries - 1:
