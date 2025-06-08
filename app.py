@@ -1015,49 +1015,52 @@ def safe_ffmpeg_process(input_path, output_path, start_time, end_time):
         raise Exception(f"FFmpeg error: {str(e)}")
 
 def download_via_rapidapi(video_id, input_path):
-    """Download video using RapidAPI"""
+    """Download video using RapidAPI with improved headers and error handling"""
     try:
         api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
         headers = {
             'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',
-            'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com'
+            'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
         }
-        
+
         response = requests.get(api_url, headers=headers, timeout=30)
         response.raise_for_status()
         result = response.json()
-        
-        adaptive_formats = result.get('adaptiveFormats', [])
-        formats = result.get('formats', [])
-        
-        if (not adaptive_formats or not isinstance(adaptive_formats, list)) and (not formats or not isinstance(formats, list)):
-            raise ValueError(f"No valid formats found via RapidAPI for video {video_id}")
-        
+
+        # Prioritize adaptiveFormats first, then regular formats
         download_url = None
-        for format_list in [formats, adaptive_formats]:
-            for format_item in format_list:
-                if format_item.get('url'):
-                    download_url = format_item.get('url')
-                    print(f"Using RapidAPI format: {format_item.get('qualityLabel', 'unknown quality')}")
+        for fmt_list in [result.get('adaptiveFormats', []), result.get('formats', [])]:
+            for fmt in fmt_list:
+                if fmt.get('url'):
+                    download_url = fmt['url']
+                    print(f"Using RapidAPI format: {fmt.get('qualityLabel', 'unknown')}")
                     break
             if download_url:
                 break
-        
+
         if not download_url:
-            raise ValueError(f"No valid download URL found via RapidAPI for video {video_id}")
+            raise ValueError("No valid download URL found via RapidAPI")
+
+        # Add referer header for download request
+        download_headers = {
+            'Referer': 'https://www.youtube.com/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+        }
 
         print(f"Downloading video to path: {input_path}")
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
         
-        download_response = requests.get(download_url, timeout=90)
-        download_response.raise_for_status()
-        video_content = download_response.content
+        # Stream download to handle large files
+        with requests.get(download_url, headers=download_headers, stream=True, timeout=90) as r:
+            r.raise_for_status()
+            with open(input_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
         
-        if len(video_content) < 1024:
-            raise ValueError("Downloaded file via RapidAPI is too small or empty")
-
-        with open(input_path, 'wb') as f:
-            f.write(video_content)
+        # Verify download
+        if os.path.getsize(input_path) < 1024:
+            raise ValueError("Downloaded file is too small or empty")
             
         return True
     except Exception as e:
@@ -1065,7 +1068,7 @@ def download_via_rapidapi(video_id, input_path):
         return False
 
 def download_via_ytdlp(video_id, input_path, use_cookies=True):
-    """Download video using yt-dlp with improved error handling and retries"""
+    """Download video using yt-dlp with enhanced options"""
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
         'outtmpl': input_path,
@@ -1081,32 +1084,47 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
         'nopart': True,
         'windowsfilenames': sys.platform == 'win32',
         'paths': {
-            'home': DOWNLOAD_DIR,  # Set the download directory explicitly
-            'temp': TMP_DIR        # Set temp directory
+            'home': DOWNLOAD_DIR,
+            'temp': TMP_DIR
+        },
+        # New options to bypass restrictions
+        'age_limit': 18,  # Bypass age restrictions
+        'referer': 'https://www.youtube.com/',
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
         }
     }
     
-    if use_cookies and validate_cookies_file(COOKIES_FILE):
+    # Use cookies if available and valid
+    if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
         ydl_opts['cookiefile'] = COOKIES_FILE
-    else:
-        ydl_opts['http_headers'] = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.5'
-        }
+        print("Using cookies for yt-dlp download")
     
     try:
         # Ensure download directory exists
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
         
-        # Try normal URL first
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
-        except Exception as e:
-            print(f"First download attempt failed, retrying with embed URL: {str(e)}")
-            # Fall back to embed URL
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([f'https://www.youtube.com/embed/{video_id}'])
+        # Try multiple URL formats
+        urls_to_try = [
+            f'https://www.youtube.com/watch?v={video_id}',
+            f'https://www.youtube.com/embed/{video_id}',
+            f'https://youtu.be/{video_id}'
+        ]
+        
+        last_error = None
+        for url in urls_to_try:
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
+                break
+            except Exception as e:
+                last_error = e
+                print(f"Download attempt failed for {url}: {str(e)}")
+        else:
+            # All attempts failed
+            raise last_error or Exception("All URL formats failed")
         
         # Verify the download
         if not os.path.exists(input_path):
@@ -1127,23 +1145,24 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
         return False
 
 def download_video(video_id, input_path):
-    """Attempt to download video using multiple methods"""
-    methods = [
-        lambda: download_via_rapidapi(video_id, input_path),
-        lambda: download_via_ytdlp(video_id, input_path, use_cookies=True),
-        lambda: download_via_ytdlp(video_id, input_path, use_cookies=False)
-    ]
+    """Attempt to download video using multiple methods with prioritization"""
+    # First try yt-dlp with cookies (most reliable if available)
+    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+        print("Attempting yt-dlp with cookies")
+        if download_via_ytdlp(video_id, input_path, use_cookies=True):
+            return True
     
-    last_error = None
-    for method in methods:
-        try:
-            if method():
-                return True
-        except Exception as e:
-            last_error = e
-            continue
+    # Then try RapidAPI
+    print("Attempting RapidAPI")
+    if download_via_rapidapi(video_id, input_path):
+        return True
     
-    raise Exception(f"All download methods failed: {str(last_error)}")
+    # Finally try yt-dlp without cookies
+    print("Attempting yt-dlp without cookies")
+    if download_via_ytdlp(video_id, input_path, use_cookies=False):
+        return True
+    
+    raise Exception("All download methods failed")
 
 @app.route('/merge-clips', methods=['POST'])
 def merge_clips_route():
