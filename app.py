@@ -1166,6 +1166,7 @@ def merge_clips_route():
                                     print(f"Failed to extract cookies from any browser: {str(cookie_err)}")
                                     # Continue without cookies, but it might fail
                             
+                            PROXY_LIST = os.getenv('PROXY_LIST', '').split(',') if os.getenv('PROXY_LIST') else None
                             # Configure yt-dlp with cookies and extra options
                             ydl_opts = {
                                 'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
@@ -1185,6 +1186,16 @@ def merge_clips_route():
                                 'hls_prefer_native': True,
                                 'hls_use_mpegts': True,
                                 'external_downloader_args': ['ffmpeg:-nostats', 'ffmpeg:-loglevel', 'ffmpeg:warning'],
+                                'proxy': PROXY_LIST[0] if PROXY_LIST else None,
+                                'extractor_args': {
+                                    'youtube': {
+                                        'skip': ['dash', 'hls'],
+                                        'player_client': ['android', 'web']
+                                    }
+                                },
+                                'force_ipv4': True,
+                                'socket_timeout': 30,
+                                'source_address': '0.0.0.0'
                             }
                             
                             # Add cookies file if available
