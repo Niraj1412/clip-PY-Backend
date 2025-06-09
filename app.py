@@ -45,7 +45,7 @@ s3_client = boto3.client(
 
 # Cookie configuration
 BASE_DIR = '/app' if os.path.exists('/app') else os.path.dirname(os.path.abspath(__file__))
-COOKIES_FILE = os.path.join(BASE_DIR, 'youtube_cookies.txt')
+COOKIES_FILE = os.path.join(BASE_DIR, 'cookies.txt')
 VALID_COOKIE_HEADERS = [
     '# HTTP Cookie File',
     '# Netscape HTTP Cookie File'
