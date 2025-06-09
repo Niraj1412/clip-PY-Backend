@@ -21,7 +21,8 @@ from botocore.exceptions import NoCredentialsError
 import uuid
 import yt_dlp
 import traceback
-from pytube import YouTube  # Added pytube import
+from pytube import YouTube  
+import random
 
 load_dotenv()
 
@@ -60,6 +61,25 @@ def validate_cookies_file(cookies_path):
             return any(first_line.startswith(header) for header in VALID_COOKIE_HEADERS)
     except Exception:
         return False
+
+PROXY_LIST = [
+    "198.23.239.134:6540:pzvokxqt:v17333r03zxw",
+    "207.244.217.165:6712:pzvokxqt:v17333r03zxw",
+    "107.172.163.27:6543:pzvokxqt:v17333r03zxw",
+    "23.94.138.75:6349:pzvokxqt:v17333r03zxw",
+    "216.10.27.159:6837:pzvokxqt:v17333r03zxw",
+    "136.0.207.84:6661:pzvokxqt:v17333r03zxw",
+    "64.64.118.149:6732:pzvokxqt:v17333r03zxw",
+    "142.147.128.93:6593:pzvokxqt:v17333r03zxw",
+    "104.239.105.125:6655:pzvokxqt:v17333r03zxw",
+    "173.0.9.70:5653:pzvokxqt:v17333r03zxw"
+]
+
+def get_random_proxy():
+    proxy = random.choice(PROXY_LIST)
+    host, port, user, pwd = proxy.split(":")
+    proxy_url = f"http://{user}:{pwd}@{host}:{port}"
+    return proxy_url
 
 # Check if ffmpeg is available
 def check_ffmpeg_availability():
@@ -1016,20 +1036,23 @@ def safe_ffmpeg_process(input_path, output_path, start_time, end_time):
         raise Exception(f"FFmpeg error: {str(e)}")
 
 def download_via_rapidapi(video_id, input_path):
-    """Download video using RapidAPI with improved headers and error handling"""
+    """Download video using RapidAPI with proxy support"""
     try:
-        api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"  # noqa: spell-check
+        api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
         headers = {
-            'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',  # noqa: spell-check
-            'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com',  # noqa: spell-check
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'  # noqa: spell-check
+            'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',
+            'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
         }
-
-        response = requests.get(api_url, headers=headers, timeout=30)
+        proxy_url = get_random_proxy()
+        proxies = {
+            "http": proxy_url,
+            "https": proxy_url
+        }
+        response = requests.get(api_url, headers=headers, timeout=30, proxies=proxies)
         response.raise_for_status()
         result = response.json()
 
-        # Prioritize adaptiveFormats first, then regular formats
         download_url = None
         for fmt_list in [result.get('adaptiveFormats', []), result.get('formats', [])]:
             for fmt in fmt_list:
@@ -1043,33 +1066,29 @@ def download_via_rapidapi(video_id, input_path):
         if not download_url:
             raise ValueError("No valid download URL found via RapidAPI")
 
-        # Add referer header for download request
         download_headers = {
-            'Referer': 'https://www.youtube.com/',  # noqa: spell-check
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'  # noqa: spell-check
+            'Referer': 'https://www.youtube.com/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
         }
 
         print(f"Downloading video to path: {input_path}")
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
-        
-        # Stream download to handle large files
-        with requests.get(download_url, headers=download_headers, stream=True, timeout=90) as r:
+
+        with requests.get(download_url, headers=download_headers, stream=True, timeout=90, proxies=proxies) as r:
             r.raise_for_status()
             with open(input_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
-        
-        # Verify download
+
         if os.path.getsize(input_path) < 1024:
             raise ValueError("Downloaded file is too small or empty")
-            
         return True
     except Exception as e:
         print(f"RapidAPI download failed: {str(e)}")
         return False
 
 def download_via_ytdlp(video_id, input_path, use_cookies=True):
-    """Download video using yt-dlp with enhanced options"""
+    """Download video using yt-dlp with enhanced options and proxy support"""
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
         'outtmpl': input_path,
@@ -1088,32 +1107,30 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
             'home': DOWNLOAD_DIR,
             'temp': TMP_DIR
         },
-        # New options to bypass restrictions
-        'age_limit': 18,  # Bypass age restrictions
+        'age_limit': 18,
         'referer': 'https://www.youtube.com/',
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        }
+        },
+        # Add proxy support
+        'proxy': get_random_proxy()
     }
-    
+    print(f"Using proxy for yt-dlp: {ydl_opts['proxy']}")
+
     # Use cookies if available and valid
     if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
         ydl_opts['cookiefile'] = COOKIES_FILE
         print("Using cookies for yt-dlp download")
-    
+
     try:
-        # Ensure download directory exists
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
-        
-        # Try multiple URL formats
         urls_to_try = [
             f'https://www.youtube.com/watch?v={video_id}',
             f'https://www.youtube.com/embed/{video_id}',
             f'https://youtu.be/{video_id}'
         ]
-        
         last_error = None
         for url in urls_to_try:
             try:
@@ -1124,26 +1141,22 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
                 last_error = e
                 print(f"Download attempt failed for {url}: {str(e)}")
         else:
-            # All attempts failed
             raise last_error or Exception("All URL formats failed")
-        
-        # Verify the download
+
         if not os.path.exists(input_path):
             raise Exception("Downloaded file not found")
-            
         if os.path.getsize(input_path) < 1024:
             raise Exception("Downloaded file is too small or empty")
-            
         return True
     except Exception as e:
         print(f"yt-dlp download failed: {str(e)}")
-        # Clean up any partial files
         if os.path.exists(input_path):
             try:
                 os.remove(input_path)
             except:
                 pass
         return False
+
 
 def download_via_pytube(video_id, input_path):
     """Download video using pytube with enhanced options"""
