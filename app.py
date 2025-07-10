@@ -1088,7 +1088,7 @@ def download_via_rapidapi(video_id, input_path, use_proxy=True):
         print(f"RapidAPI download failed: {str(e)}")
         return False
 
-def download_via_ytdlp(video_id, input_path, use_cookies=True):
+def download_via_ytdlp(video_id, input_path, use_cookies=True, use_proxy=True):
     """Download video using yt-dlp with enhanced options and proxy support"""
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
