@@ -1237,6 +1237,11 @@ def merge_clips_route():
         if not ffmpeg_available:
             return jsonify({'error': 'ffmpeg not available', 'status': False}), 500
 
+        # Generate fresh cookies before processing clips
+        print("Generating fresh cookies before merging clips")
+        if not auto_generate_cookies():
+            print("Warning: Failed to generate fresh cookies, proceeding with existing ones")
+
         data = request.get_json()
         clips = data.get('clips', [])
         cleanup_downloads = data.get('cleanupDownloads', True)
