@@ -4,8 +4,7 @@ python-dotenv==1.0.1
 youtube-transcript-api==1.0.0
 google-api-python-client==2.118.0
 gunicorn==21.2.0
-requests==2.31.0
-watchdog==2.3.1 
+watchdog==2.3.1
 ffmpeg-python==0.2.0
 boto3==1.33.1
 yt-dlp==2025.5.22

@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.proxies import WebshareProxyConfig
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 import os
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -23,8 +24,15 @@ import yt_dlp
 import traceback
 from pytube import YouTube  
 import random
+import logging
+
+
 
 load_dotenv()
+
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -51,6 +59,10 @@ VALID_COOKIE_HEADERS = [
     '# Netscape HTTP Cookie File'
 ]
 
+
+
+
+
 def validate_cookies_file(cookies_path):
     """Validate the cookies file format and size"""
     if not os.path.exists(cookies_path) or os.path.getsize(cookies_path) < 100:
@@ -63,16 +75,16 @@ def validate_cookies_file(cookies_path):
         return False
 
 PROXY_LIST = [
+    "38.154.227.167:5868:pzvokxqt:v17333r03zxw",
     "198.23.239.134:6540:pzvokxqt:v17333r03zxw",
     "207.244.217.165:6712:pzvokxqt:v17333r03zxw",
     "107.172.163.27:6543:pzvokxqt:v17333r03zxw",
-    "23.94.138.75:6349:pzvokxqt:v17333r03zxw",
     "216.10.27.159:6837:pzvokxqt:v17333r03zxw",
     "136.0.207.84:6661:pzvokxqt:v17333r03zxw",
     "64.64.118.149:6732:pzvokxqt:v17333r03zxw",
     "142.147.128.93:6593:pzvokxqt:v17333r03zxw",
     "104.239.105.125:6655:pzvokxqt:v17333r03zxw",
-    "173.0.9.70:5653:pzvokxqt:v17333r03zxw"
+    "206.41.172.74:6634:pzvokxqt:v17333r03zxw"
 ]
 
 def get_random_proxy():
@@ -157,12 +169,9 @@ for directory in [DOWNLOAD_DIR, TMP_DIR]:
 # Configure CORS
 CORS(app, resources={
     r"/*": {
-        "origins": "*",
-        "methods": ["GET", "POST", "OPTIONS", "HEAD"],
-        "allow_headers": ["Content-Type", "Authorization", "Access-Control-Allow-Origin",
-                         "Access-Control-Allow-Headers", "Origin", "Accept", "X-Requested-With"],
-        "expose_headers": ["Content-Type", "Authorization"],
-        "supports_credentials": True,
+        "origins": ["https://clip-frontend-three.vercel.app"],  # Explicitly allow your frontend
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
         "max_age": 3600
     }
 })
@@ -254,107 +263,204 @@ def get_data(video_id):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+@app.route('/url/transcript', methods=['GET', 'POST'])
+def get_transcript_by_url():
+    logger.info("Received request for /url/transcript")
+    logger.info(f"Method: {request.method}, Headers: {request.headers}, Body: {request.get_data(as_text=True)}")
 
-@app.route('/transcript/<video_id>', methods=['GET', 'POST'])
-def get_transcript(video_id):
-    try:
-        if not video_id:
+    if request.method == 'POST':
+        if not request.is_json:
+            logger.error("Request is not JSON")
             return jsonify({
-                'message': "Video ID is required",
+                'message': "Request must be JSON",
+                'status': False
+            }), 400
+        data = request.get_json()
+        video_url = data.get('video_url') if data else None
+        if not video_url:
+            logger.error("No video_url in request body")
+            return jsonify({
+                'message': "Video URL is required in request body",
+                'status': False
+            }), 400
+    else:  # GET
+        video_url = request.args.get('url')
+        if not video_url:
+            logger.error("No video_url in query parameters")
+            return jsonify({
+                'message': "Video URL is required in query parameters",
                 'status': False
             }), 400
 
+    rapidapi_key = os.getenv('RAPIDAPI_KEY')
+    if not rapidapi_key:
+        logger.error("RapidAPI key is not configured")
+        return jsonify({
+            'message': "Server configuration error",
+            'status': False
+        }), 500
 
-        # Fetch transcript
-        transcript_list = None
-        transcript_error = None
+    api_url = "https://video-transcript-scraper.p.rapidapi.com/"
+    payload = {"video_url": video_url}
+    headers = {
+        'x-rapidapi-key': rapidapi_key,
+        'x-rapidapi-host': "video-transcript-scraper.p.rapidapi.com",
+        'Content-Type': "application/json"
+    }
 
-        try:
-            ytt_api = YouTubeTranscriptApi(
-                proxy_config=WebshareProxyConfig(
-                    proxy_username=WEBSHARE_USERNAME,
-                    proxy_password=WEBSHARE_PASSWORD,
-                )
-            )
+    try:
+        response = requests.post(api_url, json=payload, headers=headers)
+        logger.info(f"API response status: {response.status_code}, body: {response.text}")
+        response.raise_for_status()
 
-            transcript_list = ytt_api.fetch(
-                video_id,
-                languages=['en']
-            )
-        except Exception as e:
-            transcript_error = str(e)
-
-            try:
-                ytt_api = YouTubeTranscriptApi(
-                    proxy_config=WebshareProxyConfig(
-                        proxy_username=WEBSHARE_USERNAME,
-                        proxy_password=WEBSHARE_PASSWORD,
-                    )
-                )
-                transcript_list = ytt_api.fetch(
-                    video_id,
-                    languages=['en']
-                )
-            except Exception as fallback_err:
-                return jsonify({
-                    'message': "No transcript available for this video. The video might not have captions enabled.",
-                    'originalError': transcript_error,
-                    'fallbackError': str(fallback_err),
-                    'status': False
-                }), 404
-
-        if not transcript_list:
-            return jsonify({
-                'message': "No transcript segments found for this video. The video might not have captions.",
-                'status': False
-            }), 404
-
+        data = response.json()
         processed_transcript = []
-        for index, item in enumerate(transcript_list):
-            try:
-                # Access attributes directly from the FetchedTranscriptSnippet object
-                text = getattr(item, 'text', None)
-                start = getattr(item, 'start', None)
-                duration = getattr(item, 'duration', None)
-
-                if text is not None and start is not None and duration is not None:
+        if 'transcripts' in data:
+            for index, item in enumerate(data['transcripts']):
+                if 'text' in item:
                     segment = {
                         'id': index + 1,
-                        'text': text.strip(),
-                        'startTime': float(start),
-                        'endTime': float(start + duration),
-                        'duration': float(duration)
+                        'text': item.get('text', '').strip(),
+                        'startTime': item.get('start', None),
+                        'endTime': None,
+                        'duration': item.get('duration', None)
                     }
+                    if segment['startTime'] is not None and segment['duration'] is not None:
+                        segment['endTime'] = segment['startTime'] + segment['duration']
                     if segment['text']:
                         processed_transcript.append(segment)
-            except Exception:
-                continue
 
         if not processed_transcript:
+            logger.info("No transcript found for this video")
             return jsonify({
-                'message': "Failed to process transcript segments. The transcript may be malformed.",
+                'message': "No transcript found for this video",
                 'status': False
             }), 404
 
+        logger.info(f"Processed {len(processed_transcript)} segments")
         return jsonify({
             'message': "Transcript fetched successfully",
             'data': processed_transcript,
             'status': True,
-            'totalSegments': len(processed_transcript),
-            'metadata': {
-                'videoId': video_id,
-                'language': 'en',
-                'isAutoGenerated': True
-            }
+            'totalSegments': len(processed_transcript)
         }), 200
 
-    except Exception as error:
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error fetching transcript: {str(e)}, response: {e.response.text}")
         return jsonify({
-            'message': "Failed to fetch transcript",
-            'error': str(error),
+            'message': f"Failed to fetch transcript: {str(e)}",
+            'status': False
+        }), e.response.status_code
+
+    except requests.exceptions.JSONDecodeError:
+        logger.error(f"Failed to parse API response as JSON: {response.text}")
+        return jsonify({
+            'message': "Invalid API response format",
             'status': False
         }), 500
 
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return jsonify({
+            'message': "An unexpected error occurred while fetching the transcript",
+            'status': False
+        }), 500
+    
+    
+
+@app.route('/transcript/<video_id>', methods=['GET', 'POST'])
+def get_transcript(video_id):
+    if not video_id:
+        return jsonify({
+            'message': "Video ID is required",
+            'status': False
+        }), 400
+
+    logger.info(f"Fetching transcript for video_id: {video_id} using scrapingdog API")
+
+    api_key = "6865405067725052ca756102"  # TODO: Replace with os.getenv('SCRAPINGDOG_API_KEY')
+    url = "https://api.scrapingdog.com/youtube/transcripts/"
+    params = {
+        "api_key": api_key,
+        "v": video_id
+    }
+
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()  # Raises an exception for 4xx/5xx status codes
+
+        # Check if the response is empty
+        if not response.text.strip():
+            logger.info("API returned an empty response")
+            return jsonify({
+                'message': "No transcript found for this video",
+                'status': False
+            }), 404
+
+        # Attempt to parse the response as JSON
+        try:
+            data = response.json()
+        except requests.exceptions.JSONDecodeError:
+            logger.error(f"Failed to parse API response as JSON: {response.text}")
+            return jsonify({
+                'message': "Invalid API response format",
+                'status': False
+            }), 500
+
+        # Process the JSON data based on the expected format with 'transcripts' key
+        processed_transcript = []
+        if isinstance(data, dict) and 'transcripts' in data:
+            for index, item in enumerate(data['transcripts']):
+                if isinstance(item, dict) and 'text' in item:
+                    segment = {
+                        'id': index + 1,
+                        'text': item.get('text', '').strip(),
+                        'startTime': item.get('start', None),
+                        'endTime': None,  # Calculate endTime if needed
+                        'duration': item.get('duration', None)
+                    }
+                    # Optionally calculate endTime if start and duration are provided
+                    if segment['startTime'] is not None and segment['duration'] is not None:
+                        segment['endTime'] = segment['startTime'] + segment['duration']
+                    if segment['text']:
+                        processed_transcript.append(segment)
+        else:
+            logger.error(f"Unexpected API response format: {type(data)}")
+            return jsonify({
+                'message': "Unexpected API response format",
+                'status': False
+            }), 500
+
+        if not processed_transcript:
+            logger.info("No valid transcript segments found")
+            return jsonify({
+                'message': "No valid transcript segments found",
+                'status': False
+            }), 404
+
+        logger.info(f"Processed {len(processed_transcript)} segments")
+        return jsonify({
+            'message': "Transcript fetched successfully",
+            'data': processed_transcript,
+            'status': True,
+            'totalSegments': len(processed_transcript)
+        }), 200
+
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error fetching transcript: {str(e)}")
+        return jsonify({
+            'message': f"Failed to fetch transcript: {str(e)}",
+            'status': False
+        }), e.response.status_code
+
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return jsonify({
+            'message': "An unexpected error occurred while fetching the transcript",
+            'status': False
+        }), 500
+        
 @app.route('/upload-cookies', methods=['POST'])
 def upload_cookies():
     """
