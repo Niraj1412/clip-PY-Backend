@@ -1218,7 +1218,7 @@ def download_video(video_id, input_path, use_proxy=True):
     
     # Pass use_proxy to other methods
     print("Attempting pytube")
-    if download_via_pytube(video_id, input_path, use_proxy=use_proxy):
+    if download_via_pytube(video_id, input_path):
         return True
     
     print("Attempting RapidAPI")
