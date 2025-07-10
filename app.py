@@ -1039,7 +1039,7 @@ def safe_ffmpeg_process(input_path, output_path, start_time, end_time):
     except Exception as e:
         raise Exception(f"FFmpeg error: {str(e)}")
 
-def download_via_rapidapi(video_id, input_path):
+def download_via_rapidapi(video_id, input_path, use_proxy=True):
     """Download video using RapidAPI with proxy support"""
     try:
         api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
@@ -1049,10 +1049,7 @@ def download_via_rapidapi(video_id, input_path):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
         }
         proxy_url = get_random_proxy()
-        proxies = {
-            "http": proxy_url,
-            "https": proxy_url
-        }
+        proxies = {"http": proxy_url, "https": proxy_url} if use_proxy else None
         response = requests.get(api_url, headers=headers, timeout=30, proxies=proxies)
         response.raise_for_status()
         result = response.json()
@@ -1119,7 +1116,7 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
         },
         # Add proxy support
-        'proxy': get_random_proxy()
+        'proxy': get_random_proxy() if use_proxy else None
     }
     print(f"Using proxy for yt-dlp: {ydl_opts['proxy']}")
 
@@ -1210,30 +1207,26 @@ def download_via_pytube(video_id, input_path):
                 pass
         return False
 
-def download_video(video_id, input_path):
-    """Attempt to download video using multiple methods with prioritization"""
-    # First try yt-dlp with cookies (most reliable if available)
+def download_video(video_id, input_path, use_proxy=True):
     if not (os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100):
-        auto_generate_cookies()  # Try to generate cookies if missing
-
+        auto_generate_cookies()
+    
     if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
         print("Attempting yt-dlp with cookies")
-        if download_via_ytdlp(video_id, input_path, use_cookies=True):
+        if download_via_ytdlp(video_id, input_path, use_cookies=True, use_proxy=use_proxy):
             return True
     
-    # Then try pytube
+    # Pass use_proxy to other methods
     print("Attempting pytube")
-    if download_via_pytube(video_id, input_path):
+    if download_via_pytube(video_id, input_path, use_proxy=use_proxy):
         return True
     
-    # Then try RapidAPI
     print("Attempting RapidAPI")
-    if download_via_rapidapi(video_id, input_path):
+    if download_via_rapidapi(video_id, input_path, use_proxy=use_proxy):
         return True
     
-    # Finally try yt-dlp without cookies
     print("Attempting yt-dlp without cookies")
-    if download_via_ytdlp(video_id, input_path, use_cookies=False):
+    if download_via_ytdlp(video_id, input_path, use_cookies=False, use_proxy=use_proxy):
         return True
     
     raise Exception("All download methods failed")
