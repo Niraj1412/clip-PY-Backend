@@ -60,7 +60,36 @@ VALID_COOKIE_HEADERS = [
 ]
 
 
+def auto_generate_cookies():
+    """
+    Automatically generate a cookies file using yt-dlp's browser extraction.
+    Tries Chrome by default. You can extend this to try other browsers.
+    """
+    cookies_file = os.path.join(BASE_DIR, 'youtube_cookies.txt')
+    if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 100:
+        # Already exists and is likely valid
+        return True
 
+    # Try extracting from Chrome (default profile)
+    try:
+        extract_cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--cookies-from-browser", "chrome",
+            "--cookies", cookies_file,
+            "--skip-download",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        ]
+        print(f"Auto-generating cookies with: {' '.join(extract_cmd)}")
+        process = subprocess.run(extract_cmd, capture_output=True, text=True, timeout=30)
+        if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 100:
+            print("Cookies file generated successfully.")
+            return True
+        else:
+            print(f"Failed to generate cookies: {process.stderr}")
+            return False
+    except Exception as e:
+        print(f"Error auto-generating cookies: {str(e)}")
+        return False
 
 
 def validate_cookies_file(cookies_path):
@@ -1315,6 +1344,9 @@ def download_via_pytube(video_id, input_path):
 def download_video(video_id, input_path):
     """Attempt to download video using multiple methods with prioritization"""
     # First try yt-dlp with cookies (most reliable if available)
+    if not (os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100):
+        auto_generate_cookies()  # Try to generate cookies if missing
+
     if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
         print("Attempting yt-dlp with cookies")
         if download_via_ytdlp(video_id, input_path, use_cookies=True):
@@ -1539,5 +1571,5 @@ def merge_clips_route():
         }), 500
         
 if __name__ == '__main__':
-
+    auto_generate_cookies()  # Ensure cookies are generated at startup
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8000)))
