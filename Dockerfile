@@ -14,7 +14,7 @@ RUN echo "http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repos
     chromium-chromedriver \
     && rm -rf /var/cache/apk/*
 
-COPY requirements54.txt requirements.txt
+COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
