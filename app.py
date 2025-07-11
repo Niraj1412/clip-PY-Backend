@@ -72,34 +72,25 @@ VALID_COOKIE_HEADERS = [
 def refresh_cookies():
     """Generate fresh YouTube cookies using Selenium with Chromium."""
     try:
-        # Retrieve credentials from environment variables
         email = os.getenv('YOUTUBE_EMAIL')
         password = os.getenv('YOUTUBE_PASSWORD')
         if not email or not password:
             logger.error("YouTube email or password not set in .env file")
             raise ValueError("YouTube email and password must be set in .env file")
 
-        # Set up Chrome options for headless browsing
         options = webdriver.ChromeOptions()
         options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')  # Additional stability in headless mode
-        options.binary_location = '/usr/bin/chromium-browser'  # Path in Alpine container
+        options.add_argument('--disable-gpu')
+        options.binary_location = '/usr/bin/chromium-browser'
 
-        # Verify Chromium and Chromedriver paths exist
-        if not os.path.exists('/usr/bin/chromium-browser') or not os.path.exists('/usr/bin/chromedriver'):
-            logger.error("Chromium or Chromedriver not found at specified paths")
-            raise FileNotFoundError("Chromium or Chromedriver not installed correctly in container")
-
-        # Initialize WebDriver
         driver = webdriver.Chrome(
             service=Service('/usr/bin/chromedriver'),
             options=options
         )
 
         try:
-            # Navigate to Google login page for YouTube
             logger.info("Navigating to YouTube login page")
             driver.get("https://accounts.google.com/ServiceLogin?service=youtube")
 
@@ -110,6 +101,16 @@ def refresh_cookies():
             )
             email_field.send_keys(email)
             driver.find_element(By.ID, "identifierNext").click()
+
+            # Handle potential consent screen
+            try:
+                consent_button = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'I agree')]"))
+                )
+                consent_button.click()
+                logger.info("Clicked consent button")
+            except TimeoutException:
+                logger.info("No consent button found")
 
             # Wait for password field
             logger.info("Waiting for password field")
@@ -122,7 +123,17 @@ def refresh_cookies():
             password_field.send_keys(password)
             driver.find_element(By.ID, "passwordNext").click()
 
-            # Wait for login to complete (adjust timeout as needed)
+            # Handle potential continue screen
+            try:
+                continue_button = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Continue')]"))
+                )
+                continue_button.click()
+                logger.info("Clicked continue button")
+            except TimeoutException:
+                logger.info("No continue button found")
+
+            # Wait for login to complete
             logger.info("Waiting for login to complete")
             WebDriverWait(driver, 20).until(
                 EC.url_contains("youtube.com"),
@@ -155,7 +166,6 @@ def refresh_cookies():
                 ))
             cookie_jar.save(ignore_discard=True, ignore_expires=True)
 
-            # Verify cookies were saved
             if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
                 logger.info("Cookies saved successfully to %s", COOKIES_FILE)
                 return True
@@ -274,16 +284,23 @@ def check_ffmpeg_availability():
         return False, None
     
 def auto_generate_cookies():
-    """Generate cookies using browser extraction or Selenium fallback."""
+    """Generate cookies using Selenium with a fallback to backup cookies."""
     if validate_cookies():
         print("Existing cookies are valid.")
         return True
 
-    # Try Selenium login first (more reliable than browser extraction)
     if refresh_cookies() and validate_cookies():
         return True
-    
-    print("Failed to generate valid cookies.")
+
+    # Fallback to backup cookies
+    backup_cookies_path = os.path.join(BASE_DIR, 'backup_youtube_cookies.txt')
+    if os.path.exists(backup_cookies_path) and validate_cookies_file(backup_cookies_path):
+        shutil.copy(backup_cookies_path, COOKIES_FILE)
+        if validate_cookies():
+            print("Using backup cookies.")
+            return True
+
+    print("Failed to generate or use valid cookies.")
     return False
 
 ffmpeg_available, ffmpeg_path = check_ffmpeg_availability()
@@ -1238,13 +1255,11 @@ def download_via_pytube(video_id, input_path):
 
 def download_video(video_id, input_path, use_proxy=True):
     """Download video using multiple methods with robust cookie handling."""
-    # Ensure cookies are valid
     if not validate_cookies():
-        print("Cookies invalid or missing, refreshing...")
+        logger.info("Cookies invalid or missing, refreshing...")
         if not refresh_cookies() or not validate_cookies():
-            print("Warning: Could not generate valid cookies, proceeding without them")
+            logger.warning("Could not generate valid cookies, proceeding without them")
 
-    # Define download attempts
     methods = [
         lambda: download_via_ytdlp(video_id, input_path, use_cookies=True, use_proxy=use_proxy),
         lambda: download_via_pytube(video_id, input_path),
@@ -1253,8 +1268,13 @@ def download_video(video_id, input_path, use_proxy=True):
     ]
 
     for method in methods:
-        if method():
-            return True
+        try:
+            if method():
+                logger.info(f"Successfully downloaded video {video_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Download method failed for {video_id}: {str(e)}")
+    
     raise Exception("All download methods failed")
 
 @app.route('/merge-clips', methods=['POST'])

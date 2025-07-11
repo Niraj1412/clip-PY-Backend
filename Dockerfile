@@ -18,15 +18,16 @@ RUN echo "http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repos
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code and backup cookies
 COPY . .
+COPY backup_youtube_cookies.txt /app/backup_youtube_cookies.txt
 
-# Create directories for downloads and temp files
+# Create directories
 ENV DOWNLOAD_DIR=/app/downloads
 ENV TMP_DIR=/app/temp
 RUN mkdir -p $DOWNLOAD_DIR $TMP_DIR
 
-# Set executable permissions if needed (optional)
+# Set permissions
 RUN chmod +x /usr/bin/chromium-browser /usr/bin/chromedriver
 
 CMD ["flask", "run", "--host=0.0.0.0", "--port=5000"]
