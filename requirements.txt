@@ -13,4 +13,3 @@ requests==2.32.4
 flask_limiter==3.5.0
 selenium==4.23.1
 webdriver-manager==4.0.2
-python-2captcha==1.1.0

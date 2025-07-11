@@ -31,7 +31,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
-from twocaptcha import TwoCaptcha
+
 
 
 
@@ -122,21 +122,17 @@ def refresh_cookies():
             logger.info("Entering password")
             password_field.send_keys(password)
             driver.find_element(By.ID, "passwordNext").click()
-            solver = TwoCaptcha('59f9380bda78087835eea065f03a3cd0')
 
             # Handle potential CAPTCHA or verification
             try:
+                # Check for CAPTCHA (simplified detection)
                 WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.XPATH, "//iframe[@title='reCAPTCHA']"))
                 )
-                logger.info("CAPTCHA detected, attempting to solve with 2Captcha")
-                site_key = driver.find_element(By.CLASS_NAME, "g-recaptcha").get_attribute("data-sitekey")
-                result = solver.recaptcha(
-                    sitekey=site_key,
-                    url="https://accounts.google.com/ServiceLogin?service=youtube"
-                )
-                driver.execute_script(f'document.getElementById("g-recaptcha-response").innerHTML="{result["code"]}";')
-                driver.find_element(By.ID, "passwordNext").click()  # Retry after solving
+                logger.warning("CAPTCHA detected; manual intervention or CAPTCHA solver required")
+                # Placeholder for CAPTCHA solving service integration
+                # Example: Integrate with 2Captcha or Anti-Captcha
+                return False  # For now, fail gracefully if CAPTCHA is detected
             except TimeoutException:
                 logger.info("No CAPTCHA detected")
 
