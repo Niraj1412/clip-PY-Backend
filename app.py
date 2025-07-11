@@ -26,6 +26,7 @@ import logging
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 import http.cookiejar
+from webdriver_manager.chrome import ChromeDriverManager
 
 
 
@@ -60,36 +61,104 @@ VALID_COOKIE_HEADERS = [
     '# Netscape HTTP Cookie File'
 ]
 
+def refresh_cookies():
+    """
+    Generate fresh YouTube cookies using Selenium by logging in with provided credentials.
+    Saves cookies to COOKIES_FILE. Requires YOUTUBE_EMAIL and YOUTUBE_PASSWORD in .env.
+    Returns True on success, False on failure.
+    """
+    try:
+        email = os.getenv('YOUTUBE_EMAIL')
+        password = os.getenv('YOUTUBE_PASSWORD')
+        if not email or not password:
+            raise ValueError("YouTube email and password must be set in .env file")
+
+        options = webdriver.ChromeOptions()
+        options.add_argument('--headless')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        driver = webdriver.Chrome(options=options)
+        
+        try:
+            driver.get("https://accounts.google.com/ServiceLogin?service=youtube")
+            email_field = driver.find_element(By.ID, "identifierId")
+            email_field.send_keys(email)
+            driver.find_element(By.ID, "identifierNext").click()
+            time.sleep(2)
+            password_field = driver.find_element(By.NAME, "password")
+            password_field.send_keys(password)
+            driver.find_element(By.ID, "passwordNext").click()
+            time.sleep(5)  # Wait for login to complete
+            cookies = driver.get_cookies()
+            cookie_jar = http.cookiejar.MozillaCookieJar(COOKIES_FILE)
+            for cookie in cookies:
+                cookie_jar.set_cookie(http.cookiejar.Cookie(
+                    version=0,
+                    name=cookie['name'],
+                    value=cookie['value'],
+                    port=None,
+                    port_specified=False,
+                    domain=cookie['domain'],
+                    domain_specified=True,
+                    domain_initial_dot=cookie['domain'].startswith('.'),
+                    path=cookie['path'],
+                    path_specified=True,
+                    secure=cookie['secure'],
+                    expires=cookie.get('expiry'),
+                    discard=False,
+                    comment=None,
+                    comment_url=None,
+                    rest={},
+                    rfc2109=False
+                ))
+            cookie_jar.save(ignore_discard=True, ignore_expires=True)
+            print("Cookies generated via Selenium successfully.")
+            return True
+        finally:
+            driver.quit()
+    except Exception as e:
+        print(f"Error generating cookies via Selenium: {str(e)}")
+        return False
+
 
 def auto_generate_cookies():
     """
     Automatically generate a cookies file using yt-dlp's browser extraction.
-    Tries Chrome by default. You can extend this to try other browsers.
+    Falls back to Selenium login if browser extraction fails.
+    Returns True on success, False on failure.
     """
     cookies_file = os.path.join(BASE_DIR, 'youtube_cookies.txt')
+    
+    # Check if valid cookies already exist
     if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 100:
-        # Already exists and is likely valid
+        print("Existing cookies found and appear valid.")
         return True
 
-    # Try extracting from Chrome (default profile)
+    # Try extracting from Chrome
     try:
         extract_cmd = [
             sys.executable, "-m", "yt_dlp",
             "--cookies-from-browser", "chrome",
             "--cookies", cookies_file,
             "--skip-download",
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Test video URL
         ]
-        print(f"Auto-generating cookies with: {' '.join(extract_cmd)}")
+        print(f"Extracting cookies with: {' '.join(extract_cmd)}")
         process = subprocess.run(extract_cmd, capture_output=True, text=True, timeout=30)
         if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 100:
-            print("Cookies file generated successfully.")
+            print("Cookies extracted from browser successfully.")
             return True
         else:
-            print(f"Failed to generate cookies: {process.stderr}")
-            return False
+            print(f"Browser extraction failed: {process.stderr}")
     except Exception as e:
-        print(f"Error auto-generating cookies: {str(e)}")
+        print(f"Error extracting cookies from browser: {str(e)}")
+
+    # Fallback to Selenium login
+    print("Attempting to generate cookies via Selenium login")
+    if refresh_cookies():
+        return True
+    else:
+        print("Failed to generate cookies via Selenium.")
         return False
 
 
@@ -1208,15 +1277,36 @@ def download_via_pytube(video_id, input_path):
         return False
 
 def download_video(video_id, input_path, use_proxy=True):
-    if not (os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100):
+    """
+    Download a YouTube video using multiple methods, ensuring valid cookies for yt-dlp.
+    """
+    # Check and validate cookies
+    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+        # Test cookie validity
+        test_cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--cookies", COOKIES_FILE,
+            "--skip-download",
+            "--print", "title",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Test video URL
+        ]
+        process = subprocess.run(test_cmd, capture_output=True, text=True, timeout=15)
+        if process.returncode != 0 or "Sign in to confirm" in process.stderr:
+            print("Cookies are invalid, regenerating")
+            auto_generate_cookies()
+        else:
+            print("Cookies are valid")
+    else:
+        print("Cookies file missing or too small, generating new cookies")
         auto_generate_cookies()
     
+    # Attempt download with cookies
     if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
         print("Attempting yt-dlp with cookies")
         if download_via_ytdlp(video_id, input_path, use_cookies=True, use_proxy=use_proxy):
             return True
     
-    # Pass use_proxy to other methods
+    # Fallback methods
     print("Attempting pytube")
     if download_via_pytube(video_id, input_path):
         return True
