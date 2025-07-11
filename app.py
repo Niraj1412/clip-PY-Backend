@@ -68,7 +68,7 @@ VALID_COOKIE_HEADERS = [
 ]
 
 def refresh_cookies():
-    """Generate fresh YouTube cookies using Selenium."""
+    """Generate fresh YouTube cookies using Selenium with Chromium."""
     try:
         # Retrieve credentials from environment variables
         email = os.getenv('YOUTUBE_EMAIL')
@@ -76,27 +76,18 @@ def refresh_cookies():
         if not email or not password:
             raise ValueError("YouTube email and password must be set in .env file")
 
-        # Set up Chrome options for headless browsing
+        # Set up Chrome options for headless browsing with Chromium
         options = webdriver.ChromeOptions()
         options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
+        options.binary_location = '/usr/bin/chromium-browser'  # Path to Chromium in Alpine
 
-        # Install and verify ChromeDriver
-        driver_path = ChromeDriverManager().install()
-        if not os.path.exists(driver_path):
-            logger.error(f"ChromeDriver not found at {driver_path}")
-            return False
-        if not os.access(driver_path, os.X_OK):
-            logger.error(f"ChromeDriver is not executable: {driver_path}")
-            return False
-
-        # Initialize WebDriver
-        try:
-            driver = webdriver.Chrome(service=Service(driver_path), options=options)
-        except Exception as e:
-            logger.error(f"Error initializing WebDriver: {e}")
-            return False
+        # Initialize WebDriver with installed ChromeDriver
+        driver = webdriver.Chrome(
+            service=Service('/usr/bin/chromedriver'),  # Path to ChromeDriver in Alpine
+            options=options
+        )
 
         try:
             # Navigate to Google login page for YouTube
@@ -119,14 +110,10 @@ def refresh_cookies():
             password_field.send_keys(password)
             driver.find_element(By.ID, "passwordNext").click()
 
-            # Wait for login to complete by checking URL
+            # Wait for login to complete
             logger.info("Waiting for login to complete.")
-            try:
-                WebDriverWait(driver, 15).until(EC.url_contains("youtube.com"))
-                logger.info("Login successful.")
-            except TimeoutException:
-                logger.error("Login failed or took too long, possibly due to CAPTCHA or network issues.")
-                return False
+            WebDriverWait(driver, 15).until(EC.url_contains("youtube.com"))
+            logger.info("Login successful.")
 
             # Retrieve and save cookies
             cookies = driver.get_cookies()
@@ -151,7 +138,6 @@ def refresh_cookies():
                 return False
 
         finally:
-            # Ensure the driver is closed
             driver.quit()
 
     except Exception as e:

@@ -2,14 +2,19 @@ FROM python:3.12-alpine
 
 WORKDIR /app
 
-RUN apk update && apk add --no-cache \
+# Add edge repositories for Chromium and update package list
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories \
+    && echo "http://dl-cdn.alpinelinux.org/alpine/edge/main" >> /etc/apk/repositories \
+    && apk update && apk add --no-cache \
     ffmpeg \
     build-base \
     libffi-dev \
     curl \
+    chromium \
+    chromium-chromedriver \
     && rm -rf /var/cache/apk/*
 
-COPY requirements.txt .
+COPY requirements54.txt requirements.txt
 
 RUN pip install --no-cache-dir -r requirements.txt
 
