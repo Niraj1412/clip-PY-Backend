@@ -28,6 +28,11 @@ from selenium.webdriver.common.by import By
 import http.cookiejar
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+
+
 
 
 
@@ -65,27 +70,65 @@ VALID_COOKIE_HEADERS = [
 def refresh_cookies():
     """Generate fresh YouTube cookies using Selenium."""
     try:
+        # Retrieve credentials from environment variables
         email = os.getenv('YOUTUBE_EMAIL')
         password = os.getenv('YOUTUBE_PASSWORD')
         if not email or not password:
             raise ValueError("YouTube email and password must be set in .env file")
 
+        # Set up Chrome options for headless browsing
         options = webdriver.ChromeOptions()
         options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-        
+
+        # Install and verify ChromeDriver
+        driver_path = ChromeDriverManager().install()
+        if not os.path.exists(driver_path):
+            logger.error(f"ChromeDriver not found at {driver_path}")
+            return False
+        if not os.access(driver_path, os.X_OK):
+            logger.error(f"ChromeDriver is not executable: {driver_path}")
+            return False
+
+        # Initialize WebDriver
         try:
+            driver = webdriver.Chrome(service=Service(driver_path), options=options)
+        except Exception as e:
+            logger.error(f"Error initializing WebDriver: {e}")
+            return False
+
+        try:
+            # Navigate to Google login page for YouTube
+            logger.info("Navigating to login page.")
             driver.get("https://accounts.google.com/ServiceLogin?service=youtube")
+
+            # Enter email
+            logger.info("Entering email.")
             email_field = driver.find_element(By.ID, "identifierId")
             email_field.send_keys(email)
             driver.find_element(By.ID, "identifierNext").click()
-            time.sleep(3)
+
+            # Wait for password field to appear
+            logger.info("Waiting for password field.")
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "password")))
+
+            # Enter password
+            logger.info("Entering password.")
             password_field = driver.find_element(By.NAME, "password")
             password_field.send_keys(password)
             driver.find_element(By.ID, "passwordNext").click()
-            time.sleep(10)  # Wait for login and potential CAPTCHA
+
+            # Wait for login to complete by checking URL
+            logger.info("Waiting for login to complete.")
+            try:
+                WebDriverWait(driver, 15).until(EC.url_contains("youtube.com"))
+                logger.info("Login successful.")
+            except TimeoutException:
+                logger.error("Login failed or took too long, possibly due to CAPTCHA or network issues.")
+                return False
+
+            # Retrieve and save cookies
             cookies = driver.get_cookies()
             cookie_jar = http.cookiejar.MozillaCookieJar(COOKIES_FILE)
             for cookie in cookies:
@@ -98,13 +141,23 @@ def refresh_cookies():
                     comment_url=None, rest={}, rfc2109=False
                 ))
             cookie_jar.save(ignore_discard=True, ignore_expires=True)
-            print("Cookies refreshed successfully.")
-            return True
+
+            # Verify cookies were saved
+            if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
+                logger.info("Cookies saved successfully.")
+                return True
+            else:
+                logger.error("Failed to save cookies.")
+                return False
+
         finally:
+            # Ensure the driver is closed
             driver.quit()
+
     except Exception as e:
-        print(f"Error refreshing cookies: {str(e)}")
+        logger.error(f"Error refreshing cookies: {str(e)}")
         return False
+
 
 
 
