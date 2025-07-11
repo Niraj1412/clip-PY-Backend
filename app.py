@@ -31,6 +31,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+from twocaptcha import TwoCaptcha
 
 
 
@@ -70,7 +71,6 @@ VALID_COOKIE_HEADERS = [
 ]
 
 def refresh_cookies():
-    """Generate fresh YouTube cookies using Selenium with Chromium."""
     try:
         email = os.getenv('YOUTUBE_EMAIL')
         password = os.getenv('YOUTUBE_PASSWORD')
@@ -112,9 +112,9 @@ def refresh_cookies():
             except TimeoutException:
                 logger.info("No consent button found")
 
-            # Wait for password field
+            # Wait for password field with extended timeout
             logger.info("Waiting for password field")
-            password_field = WebDriverWait(driver, 10).until(
+            password_field = WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.NAME, "password"))
             )
 
@@ -122,20 +122,27 @@ def refresh_cookies():
             logger.info("Entering password")
             password_field.send_keys(password)
             driver.find_element(By.ID, "passwordNext").click()
+            solver = TwoCaptcha('59f9380bda78087835eea065f03a3cd0')
 
-            # Handle potential continue screen
+            # Handle potential CAPTCHA or verification
             try:
-                continue_button = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Continue')]"))
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//iframe[@title='reCAPTCHA']"))
                 )
-                continue_button.click()
-                logger.info("Clicked continue button")
+                logger.info("CAPTCHA detected, attempting to solve with 2Captcha")
+                site_key = driver.find_element(By.CLASS_NAME, "g-recaptcha").get_attribute("data-sitekey")
+                result = solver.recaptcha(
+                    sitekey=site_key,
+                    url="https://accounts.google.com/ServiceLogin?service=youtube"
+                )
+                driver.execute_script(f'document.getElementById("g-recaptcha-response").innerHTML="{result["code"]}";')
+                driver.find_element(By.ID, "passwordNext").click()  # Retry after solving
             except TimeoutException:
-                logger.info("No continue button found")
+                logger.info("No CAPTCHA detected")
 
             # Wait for login to complete
             logger.info("Waiting for login to complete")
-            WebDriverWait(driver, 20).until(
+            WebDriverWait(driver, 30).until(
                 EC.url_contains("youtube.com"),
                 message="Login failed or took too long; possible CAPTCHA or consent screen"
             )
