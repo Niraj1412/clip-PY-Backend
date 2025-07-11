@@ -40,10 +40,12 @@ load_dotenv()
 
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('app')
+logger.setLevel(logging.INFO)
 
 # Initialize Flask app
 app = Flask(__name__)
+CORS(app)
 
 # AWS S3 Configuration
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
@@ -74,74 +76,104 @@ def refresh_cookies():
         email = os.getenv('YOUTUBE_EMAIL')
         password = os.getenv('YOUTUBE_PASSWORD')
         if not email or not password:
+            logger.error("YouTube email or password not set in .env file")
             raise ValueError("YouTube email and password must be set in .env file")
 
-        # Set up Chrome options for headless browsing with Chromium
+        # Set up Chrome options for headless browsing
         options = webdriver.ChromeOptions()
         options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
-        options.binary_location = '/usr/bin/chromium-browser'  # Path to Chromium in Alpine
+        options.add_argument('--disable-gpu')  # Additional stability in headless mode
+        options.binary_location = '/usr/bin/chromium-browser'  # Path in Alpine container
 
-        # Initialize WebDriver with installed ChromeDriver
+        # Verify Chromium and Chromedriver paths exist
+        if not os.path.exists('/usr/bin/chromium-browser') or not os.path.exists('/usr/bin/chromedriver'):
+            logger.error("Chromium or Chromedriver not found at specified paths")
+            raise FileNotFoundError("Chromium or Chromedriver not installed correctly in container")
+
+        # Initialize WebDriver
         driver = webdriver.Chrome(
-            service=Service('/usr/bin/chromedriver'),  # Path to ChromeDriver in Alpine
+            service=Service('/usr/bin/chromedriver'),
             options=options
         )
 
         try:
             # Navigate to Google login page for YouTube
-            logger.info("Navigating to login page.")
+            logger.info("Navigating to YouTube login page")
             driver.get("https://accounts.google.com/ServiceLogin?service=youtube")
 
             # Enter email
-            logger.info("Entering email.")
-            email_field = driver.find_element(By.ID, "identifierId")
+            logger.info("Entering email")
+            email_field = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "identifierId"))
+            )
             email_field.send_keys(email)
             driver.find_element(By.ID, "identifierNext").click()
 
-            # Wait for password field to appear
-            logger.info("Waiting for password field.")
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "password")))
+            # Wait for password field
+            logger.info("Waiting for password field")
+            password_field = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.NAME, "password"))
+            )
 
             # Enter password
-            logger.info("Entering password.")
-            password_field = driver.find_element(By.NAME, "password")
+            logger.info("Entering password")
             password_field.send_keys(password)
             driver.find_element(By.ID, "passwordNext").click()
 
-            # Wait for login to complete
-            logger.info("Waiting for login to complete.")
-            WebDriverWait(driver, 15).until(EC.url_contains("youtube.com"))
-            logger.info("Login successful.")
+            # Wait for login to complete (adjust timeout as needed)
+            logger.info("Waiting for login to complete")
+            WebDriverWait(driver, 20).until(
+                EC.url_contains("youtube.com"),
+                message="Login failed or took too long; possible CAPTCHA or consent screen"
+            )
+            logger.info("Login successful")
 
-            # Retrieve and save cookies
+            # Save cookies
             cookies = driver.get_cookies()
             cookie_jar = http.cookiejar.MozillaCookieJar(COOKIES_FILE)
             for cookie in cookies:
                 cookie_jar.set_cookie(http.cookiejar.Cookie(
-                    version=0, name=cookie['name'], value=cookie['value'],
-                    port=None, port_specified=False, domain=cookie['domain'],
-                    domain_specified=True, domain_initial_dot=cookie['domain'].startswith('.'),
-                    path=cookie['path'], path_specified=True, secure=cookie['secure'],
-                    expires=cookie.get('expiry'), discard=False, comment=None,
-                    comment_url=None, rest={}, rfc2109=False
+                    version=0,
+                    name=cookie['name'],
+                    value=cookie['value'],
+                    port=None,
+                    port_specified=False,
+                    domain=cookie['domain'],
+                    domain_specified=True,
+                    domain_initial_dot=cookie['domain'].startswith('.'),
+                    path=cookie['path'],
+                    path_specified=True,
+                    secure=cookie['secure'],
+                    expires=cookie.get('expiry'),
+                    discard=False,
+                    comment=None,
+                    comment_url=None,
+                    rest={},
+                    rfc2109=False
                 ))
             cookie_jar.save(ignore_discard=True, ignore_expires=True)
 
             # Verify cookies were saved
             if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
-                logger.info("Cookies saved successfully.")
+                logger.info("Cookies saved successfully to %s", COOKIES_FILE)
                 return True
             else:
-                logger.error("Failed to save cookies.")
+                logger.error("Cookies file is empty or not created")
                 return False
 
+        except TimeoutException as te:
+            logger.error(f"Timeout during login: {str(te)} - Possible CAPTCHA or consent screen")
+            return False
+        except Exception as e:
+            logger.error(f"Error during login process: {str(e)}")
+            return False
         finally:
             driver.quit()
 
     except Exception as e:
-        logger.error(f"Error refreshing cookies: {str(e)}")
+        logger.error(f"Failed to refresh cookies: {str(e)}")
         return False
 
 
