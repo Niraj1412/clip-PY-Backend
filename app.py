@@ -62,11 +62,7 @@ VALID_COOKIE_HEADERS = [
 ]
 
 def refresh_cookies():
-    """
-    Generate fresh YouTube cookies using Selenium by logging in with provided credentials.
-    Saves cookies to COOKIES_FILE. Requires YOUTUBE_EMAIL and YOUTUBE_PASSWORD in .env.
-    Returns True on success, False on failure.
-    """
+    """Generate fresh YouTube cookies using Selenium."""
     try:
         email = os.getenv('YOUTUBE_EMAIL')
         password = os.getenv('YOUTUBE_PASSWORD')
@@ -77,89 +73,40 @@ def refresh_cookies():
         options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
-        driver = webdriver.Chrome(options=options)
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
         
         try:
             driver.get("https://accounts.google.com/ServiceLogin?service=youtube")
             email_field = driver.find_element(By.ID, "identifierId")
             email_field.send_keys(email)
             driver.find_element(By.ID, "identifierNext").click()
-            time.sleep(2)
+            time.sleep(3)
             password_field = driver.find_element(By.NAME, "password")
             password_field.send_keys(password)
             driver.find_element(By.ID, "passwordNext").click()
-            time.sleep(5)  # Wait for login to complete
+            time.sleep(10)  # Wait for login and potential CAPTCHA
             cookies = driver.get_cookies()
             cookie_jar = http.cookiejar.MozillaCookieJar(COOKIES_FILE)
             for cookie in cookies:
                 cookie_jar.set_cookie(http.cookiejar.Cookie(
-                    version=0,
-                    name=cookie['name'],
-                    value=cookie['value'],
-                    port=None,
-                    port_specified=False,
-                    domain=cookie['domain'],
-                    domain_specified=True,
-                    domain_initial_dot=cookie['domain'].startswith('.'),
-                    path=cookie['path'],
-                    path_specified=True,
-                    secure=cookie['secure'],
-                    expires=cookie.get('expiry'),
-                    discard=False,
-                    comment=None,
-                    comment_url=None,
-                    rest={},
-                    rfc2109=False
+                    version=0, name=cookie['name'], value=cookie['value'],
+                    port=None, port_specified=False, domain=cookie['domain'],
+                    domain_specified=True, domain_initial_dot=cookie['domain'].startswith('.'),
+                    path=cookie['path'], path_specified=True, secure=cookie['secure'],
+                    expires=cookie.get('expiry'), discard=False, comment=None,
+                    comment_url=None, rest={}, rfc2109=False
                 ))
             cookie_jar.save(ignore_discard=True, ignore_expires=True)
-            print("Cookies generated via Selenium successfully.")
+            print("Cookies refreshed successfully.")
             return True
         finally:
             driver.quit()
     except Exception as e:
-        print(f"Error generating cookies via Selenium: {str(e)}")
+        print(f"Error refreshing cookies: {str(e)}")
         return False
 
 
-def auto_generate_cookies():
-    """
-    Automatically generate a cookies file using yt-dlp's browser extraction.
-    Falls back to Selenium login if browser extraction fails.
-    Returns True on success, False on failure.
-    """
-    cookies_file = os.path.join(BASE_DIR, 'youtube_cookies.txt')
-    
-    # Check if valid cookies already exist
-    if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 100:
-        print("Existing cookies found and appear valid.")
-        return True
 
-    # Try extracting from Chrome
-    try:
-        extract_cmd = [
-            sys.executable, "-m", "yt_dlp",
-            "--cookies-from-browser", "chrome",
-            "--cookies", cookies_file,
-            "--skip-download",
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Test video URL
-        ]
-        print(f"Extracting cookies with: {' '.join(extract_cmd)}")
-        process = subprocess.run(extract_cmd, capture_output=True, text=True, timeout=30)
-        if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 100:
-            print("Cookies extracted from browser successfully.")
-            return True
-        else:
-            print(f"Browser extraction failed: {process.stderr}")
-    except Exception as e:
-        print(f"Error extracting cookies from browser: {str(e)}")
-
-    # Fallback to Selenium login
-    print("Attempting to generate cookies via Selenium login")
-    if refresh_cookies():
-        return True
-    else:
-        print("Failed to generate cookies via Selenium.")
-        return False
 
 
 def validate_cookies_file(cookies_path):
@@ -171,6 +118,29 @@ def validate_cookies_file(cookies_path):
             first_line = f.readline().strip()
             return any(first_line.startswith(header) for header in VALID_COOKIE_HEADERS)
     except Exception:
+        return False
+    
+    
+def validate_cookies():
+    """Validate cookies by testing them with yt-dlp."""
+    if not os.path.exists(COOKIES_FILE) or os.path.getsize(COOKIES_FILE) < 100:
+        return False
+    try:
+        test_cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--cookies", COOKIES_FILE,
+            "--skip-download",
+            "--print", "title",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Test video
+        ]
+        process = subprocess.run(test_cmd, capture_output=True, text=True, timeout=15)
+        if process.returncode == 0 and "Sign in to confirm" not in process.stderr:
+            print("Cookies validated successfully.")
+            return True
+        print("Cookies invalid based on test.")
+        return False
+    except Exception as e:
+        print(f"Error validating cookies: {str(e)}")
         return False
 
 PROXY_LIST = [
@@ -187,10 +157,10 @@ PROXY_LIST = [
 ]
 
 def get_random_proxy():
+    """Return a random proxy from PROXY_LIST in the correct format."""
     proxy = random.choice(PROXY_LIST)
     host, port, user, pwd = proxy.split(":")
-    proxy_url = f"http://{user}:{pwd}@{host}:{port}"
-    return proxy_url
+    return f"http://{user}:{pwd}@{host}:{port}"
 
 # Check if ffmpeg is available
 def check_ffmpeg_availability():
@@ -230,6 +200,19 @@ def check_ffmpeg_availability():
     except Exception as e:
         print(f"Error checking ffmpeg: {str(e)}")
         return False, None
+    
+def auto_generate_cookies():
+    """Generate cookies using browser extraction or Selenium fallback."""
+    if validate_cookies():
+        print("Existing cookies are valid.")
+        return True
+
+    # Try Selenium login first (more reliable than browser extraction)
+    if refresh_cookies() and validate_cookies():
+        return True
+    
+    print("Failed to generate valid cookies.")
+    return False
 
 ffmpeg_available, ffmpeg_path = check_ffmpeg_availability()
 if not ffmpeg_available:
@@ -1109,216 +1092,97 @@ def safe_ffmpeg_process(input_path, output_path, start_time, end_time):
         raise Exception(f"FFmpeg error: {str(e)}")
 
 def download_via_rapidapi(video_id, input_path, use_proxy=True):
-    """Download video using RapidAPI with proxy support"""
+    """Download video using RapidAPI with proxy support."""
     try:
         api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
         headers = {
-            'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',
+            'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',  # Replace with your key
             'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
         }
-        proxy_url = get_random_proxy()
-        proxies = {"http": proxy_url, "https": proxy_url} if use_proxy else None
-        response = requests.get(api_url, headers=headers, timeout=30, proxies=proxies)
+        proxies = {"http": get_random_proxy(), "https": get_random_proxy()} if use_proxy else None
+        response = requests.get(api_url, headers=headers, proxies=proxies, timeout=30)
         response.raise_for_status()
         result = response.json()
-
-        download_url = None
-        for fmt_list in [result.get('adaptiveFormats', []), result.get('formats', [])]:
-            for fmt in fmt_list:
-                if fmt.get('url'):
-                    download_url = fmt['url']
-                    print(f"Using RapidAPI format: {fmt.get('qualityLabel', 'unknown')}")
-                    break
-            if download_url:
-                break
-
+        download_url = next((fmt['url'] for fmt in result.get('adaptiveFormats', []) if fmt.get('url')), None)
         if not download_url:
-            raise ValueError("No valid download URL found via RapidAPI")
-
-        download_headers = {
-            'Referer': 'https://www.youtube.com/',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
-        }
-
-        print(f"Downloading video to path: {input_path}")
-        os.makedirs(os.path.dirname(input_path), exist_ok=True)
-
-        with requests.get(download_url, headers=download_headers, stream=True, timeout=90, proxies=proxies) as r:
+            raise ValueError("No download URL found")
+        with requests.get(download_url, stream=True, proxies=proxies, timeout=90) as r:
             r.raise_for_status()
+            os.makedirs(os.path.dirname(input_path), exist_ok=True)
             with open(input_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
-
-        if os.path.getsize(input_path) < 1024:
-            raise ValueError("Downloaded file is too small or empty")
-        return True
+        if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
+            print(f"RapidAPI download succeeded for {video_id}")
+            return True
     except Exception as e:
         print(f"RapidAPI download failed: {str(e)}")
-        return False
+    return False
+
 
 def download_via_ytdlp(video_id, input_path, use_cookies=True, use_proxy=True):
-    """Download video using yt-dlp with enhanced options and proxy support"""
+    """Download video using yt-dlp with retries."""
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
         'outtmpl': input_path,
+        'retries': 5,
+        'proxy': get_random_proxy() if use_proxy else None,
+        'cookiefile': COOKIES_FILE if use_cookies and os.path.exists(COOKIES_FILE) else None,
         'quiet': False,
         'no_warnings': False,
-        'retries': 10,
-        'fragment_retries': 10,
-        'extractor_retries': 3,
-        'ignoreerrors': False,
-        'noprogress': True,
-        'nooverwrites': False,
-        'continuedl': False,
-        'nopart': True,
-        'windowsfilenames': sys.platform == 'win32',
-        'paths': {
-            'home': DOWNLOAD_DIR,
-            'temp': TMP_DIR
-        },
-        'age_limit': 18,
-        'referer': 'https://www.youtube.com/',
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        },
-        # Add proxy support
-        'proxy': get_random_proxy() if use_proxy else None
+            'Referer': 'https://www.youtube.com/'
+        }
     }
-    print(f"Using proxy for yt-dlp: {ydl_opts['proxy']}")
-
-    # Use cookies if available and valid
-    if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
-        ydl_opts['cookiefile'] = COOKIES_FILE
-        print("Using cookies for yt-dlp download")
-
     try:
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
-        urls_to_try = [
-            f'https://www.youtube.com/watch?v={video_id}',
-            f'https://www.youtube.com/embed/{video_id}',
-            f'https://youtu.be/{video_id}'
-        ]
-        last_error = None
-        for url in urls_to_try:
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
-                break
-            except Exception as e:
-                last_error = e
-                print(f"Download attempt failed for {url}: {str(e)}")
-        else:
-            raise last_error or Exception("All URL formats failed")
-
-        if not os.path.exists(input_path):
-            raise Exception("Downloaded file not found")
-        if os.path.getsize(input_path) < 1024:
-            raise Exception("Downloaded file is too small or empty")
-        return True
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+        if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
+            print(f"yt-dlp download succeeded for {video_id}")
+            return True
     except Exception as e:
         print(f"yt-dlp download failed: {str(e)}")
-        if os.path.exists(input_path):
-            try:
-                os.remove(input_path)
-            except:
-                pass
-        return False
+    return False
 
 
 def download_via_pytube(video_id, input_path):
-    """Download video using pytube with enhanced options"""
-    try:
-        # Create YouTube object
-        yt = YouTube(f'https://www.youtube.com/watch?v={video_id}')
-        
-        # Get the highest resolution stream (up to 720p)
-        stream = yt.streams.filter(
-            file_extension='mp4',
-            progressive=True,
-            resolution='720p'
-        ).order_by('resolution').desc().first()
-        
-        # If no 720p stream, get the highest available
-        if not stream:
-            stream = yt.streams.filter(
-                file_extension='mp4',
-                progressive=True
-            ).order_by('resolution').desc().first()
-        
-        if not stream:
-            raise Exception("No suitable video stream found")
-        
-        print(f"Downloading video {video_id} with resolution: {stream.resolution}")
-        
-        # Ensure download directory exists
-        os.makedirs(os.path.dirname(input_path), exist_ok=True)
-        
-        # Download the video
-        stream.download(
-            output_path=os.path.dirname(input_path),
-            filename=os.path.basename(input_path))
-        
-        # Verify download
-        if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
-            raise Exception("Downloaded file is too small or empty")
-            
-        return True
-    except Exception as e:
-        print(f"pytube download failed: {str(e)}")
-        # Clean up any partial files
-        if os.path.exists(input_path):
-            try:
-                os.remove(input_path)
-            except:
-                pass
-        return False
+    """Download video using pytube with retries."""
+    for attempt in range(3):
+        try:
+            yt = YouTube(f'https://www.youtube.com/watch?v={video_id}')
+            stream = yt.streams.filter(file_extension='mp4', progressive=True).order_by('resolution').desc().first()
+            if stream:
+                stream.download(output_path=os.path.dirname(input_path), filename=os.path.basename(input_path))
+                if os.path.exists(input_path) and os.path.getsize(input_path) > 1024:
+                    print(f"pytube download succeeded for {video_id}")
+                    return True
+        except Exception as e:
+            print(f"pytube attempt {attempt+1} failed: {str(e)}")
+            time.sleep(5)  # Delay between retries
+    return False
 
 def download_video(video_id, input_path, use_proxy=True):
-    """
-    Download a YouTube video using multiple methods, ensuring valid cookies for yt-dlp.
-    """
-    # Check and validate cookies
-    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
-        # Test cookie validity
-        test_cmd = [
-            sys.executable, "-m", "yt_dlp",
-            "--cookies", COOKIES_FILE,
-            "--skip-download",
-            "--print", "title",
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Test video URL
-        ]
-        process = subprocess.run(test_cmd, capture_output=True, text=True, timeout=15)
-        if process.returncode != 0 or "Sign in to confirm" in process.stderr:
-            print("Cookies are invalid, regenerating")
-            auto_generate_cookies()
-        else:
-            print("Cookies are valid")
-    else:
-        print("Cookies file missing or too small, generating new cookies")
-        auto_generate_cookies()
-    
-    # Attempt download with cookies
-    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
-        print("Attempting yt-dlp with cookies")
-        if download_via_ytdlp(video_id, input_path, use_cookies=True, use_proxy=use_proxy):
+    """Download video using multiple methods with robust cookie handling."""
+    # Ensure cookies are valid
+    if not validate_cookies():
+        print("Cookies invalid or missing, refreshing...")
+        if not refresh_cookies() or not validate_cookies():
+            print("Warning: Could not generate valid cookies, proceeding without them")
+
+    # Define download attempts
+    methods = [
+        lambda: download_via_ytdlp(video_id, input_path, use_cookies=True, use_proxy=use_proxy),
+        lambda: download_via_pytube(video_id, input_path),
+        lambda: download_via_rapidapi(video_id, input_path, use_proxy=use_proxy),
+        lambda: download_via_ytdlp(video_id, input_path, use_cookies=False, use_proxy=use_proxy)
+    ]
+
+    for method in methods:
+        if method():
             return True
-    
-    # Fallback methods
-    print("Attempting pytube")
-    if download_via_pytube(video_id, input_path):
-        return True
-    
-    print("Attempting RapidAPI")
-    if download_via_rapidapi(video_id, input_path, use_proxy=use_proxy):
-        return True
-    
-    print("Attempting yt-dlp without cookies")
-    if download_via_ytdlp(video_id, input_path, use_cookies=False, use_proxy=use_proxy):
-        return True
-    
     raise Exception("All download methods failed")
 
 @app.route('/merge-clips', methods=['POST'])
