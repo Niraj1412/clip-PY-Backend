@@ -25,6 +25,7 @@ import traceback
 from pytube import YouTube  
 import random
 import logging
+import sieve
 
 
 
@@ -1140,6 +1141,51 @@ def safe_ffmpeg_process(input_path, output_path, start_time, end_time):
         raise Exception(f"FFmpeg processing failed: {e.stderr.decode()}")
     except Exception as e:
         raise Exception(f"FFmpeg error: {str(e)}")
+    
+def download_via_sieve(video_id, input_path):
+    """Download video using Sieve's youtube-downloader function"""
+    if not os.getenv('SIEVE_API_KEY'):
+        print("SIEVE_API_KEY not set, skipping Sieve download")
+        return False
+    try:
+        youtube_downloader = sieve.function.get("sieve/youtube-downloader")
+        output = youtube_downloader.run(
+            url=f"https://www.youtube.com/watch?v={video_id}",
+            download_type="video",
+            resolution="highest-available",
+            include_audio=True,
+            start_time=0,
+            end_time=-1,
+            include_metadata=False,
+            metadata_fields=[],
+            include_subtitles=False,
+            subtitle_languages=[],
+            video_format="mp4",
+            audio_format="mp3",
+            subtitle_format="vtt"
+        )
+        # Assuming output is a list and the first item contains the video URL
+        if not output or 'video_url' not in output[0]:
+            raise ValueError("No video URL found in Sieve output")
+        video_url = output[0]['video_url']
+        
+        # Download the video from the URL to the local input_path
+        response = requests.get(video_url, stream=True, timeout=90)
+        response.raise_for_status()
+        with open(input_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        # Verify the downloaded file
+        if os.path.getsize(input_path) < 1024:
+            raise ValueError("Downloaded file is too small or empty")
+        print(f"Sieve downloaded video {video_id} successfully")
+        return True
+    except Exception as e:
+        print(f"Sieve download failed for video {video_id}: {str(e)}")
+        return False
+    
+    
 
 def download_via_rapidapi(video_id, input_path):
     """Download video using RapidAPI with proxy support"""
@@ -1314,7 +1360,12 @@ def download_via_pytube(video_id, input_path):
 
 def download_video(video_id, input_path):
     """Attempt to download video using multiple methods with prioritization"""
-    # First try yt-dlp with cookies (most reliable if available)
+    # First try Sieve
+    print("Attempting Sieve")
+    if download_via_sieve(video_id, input_path):
+        return True
+    
+    # Then try yt-dlp with cookies
     if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
         print("Attempting yt-dlp with cookies")
         if download_via_ytdlp(video_id, input_path, use_cookies=True):
