@@ -1244,30 +1244,16 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
         'outtmpl': input_path,
-        'quiet': False,
-        'no_warnings': False,
-        'retries': 10,
-        'fragment_retries': 10,
-        'extractor_retries': 3,
-        'ignoreerrors': False,
-        'noprogress': True,
-        'nooverwrites': False,
-        'continuedl': False,
-        'nopart': True,
-        'windowsfilenames': sys.platform == 'win32',
-        'paths': {
-            'home': DOWNLOAD_DIR,
-            'temp': TMP_DIR
-        },
-        'age_limit': 18,
-        'referer': 'https://www.youtube.com/',
+        'proxy': get_random_proxy(),
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Referer': 'https://www.youtube.com/'
         },
-        # Add proxy support
-        'proxy': get_random_proxy()
+        'cookiefile': COOKIES_FILE if use_cookies and os.path.exists(COOKIES_FILE) else None,
+        'retries': 10,
+        'fragment_retries': 10,
     }
     print(f"Using proxy for yt-dlp: {ydl_opts['proxy']}")
 
