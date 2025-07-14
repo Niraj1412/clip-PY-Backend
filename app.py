@@ -1154,7 +1154,7 @@ def download_via_sieve(video_id, input_path):
         output = youtube_downloader.run(
             url=f"https://www.youtube.com/watch?v={video_id}",
             download_type="video",
-            resolution="144p",  # Lowest quality to reduce bandwidth
+            resolution="360p",  # Try a more common resolution
             include_audio=True,
             start_time=0,
             end_time=-1,
@@ -1166,16 +1166,17 @@ def download_via_sieve(video_id, input_path):
             audio_format="mp3",
             subtitle_format="vtt"
         )
-        # Iterate over the generator to find the video URL
         video_url = None
         for item in output:
-            if 'video_url' in item:
+            print(f"Debug: {item}")  # Log output for inspection
+            if isinstance(item, dict) and 'error' in item:
+                raise ValueError(f"Sieve API error: {item.get('error')}")
+            if isinstance(item, dict) and 'video_url' in item:
                 video_url = item['video_url']
                 break
         if not video_url:
             raise ValueError("No video URL found in Sieve output")
 
-        # Download the video from the URL
         response = requests.get(video_url, stream=True, timeout=90)
         response.raise_for_status()
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
@@ -1183,7 +1184,6 @@ def download_via_sieve(video_id, input_path):
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
 
-        # Verify the downloaded file
         if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
             raise ValueError("Downloaded file is too small or empty")
         print(f"Sieve downloaded video {video_id} successfully")
@@ -1195,135 +1195,115 @@ def download_via_sieve(video_id, input_path):
     
 
 def download_via_rapidapi(video_id, input_path):
-    """Download video using RapidAPI with proxy retry mechanism"""
-    proxies = PROXY_LIST.copy()
-    random.shuffle(proxies)
-    for proxy in proxies:
-        try:
-            host, port, user, pwd = proxy.split(":")
-            proxy_url = f"http://{user}:{pwd}@{host}:{port}"
-            proxies_dict = {"http": proxy_url, "https": proxy_url}
-            
-            # Step 1: Get download URL from RapidAPI
-            api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
-            headers = {
-                'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',
-                'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
-            }
-            print(f"Using proxy for RapidAPI API call: {proxy_url}")
-            response = requests.get(api_url, headers=headers, timeout=30, proxies=proxies_dict)
-            response.raise_for_status()
-            result = response.json()
+    """Download video using RapidAPI without proxies"""
+    try:
+        # Step 1: Get download URL from RapidAPI
+        api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
+        headers = {
+            'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',
+            'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+        }
+        response = requests.get(api_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        result = response.json()
 
-            # Step 2: Select lowest quality download URL
-            download_url = None
-            formats = result.get('formats', [])
-            if formats:
-                sorted_formats = sorted(formats, key=lambda x: int(x.get('height', 0) or 0))
-                for fmt in sorted_formats:
-                    if fmt.get('url'):
-                        download_url = fmt['url']
-                        print(f"Using RapidAPI format: {fmt.get('qualityLabel', 'unknown')}")
-                        break
-                if not download_url:
-                    raise ValueError("No valid download URL found in formats")
+        # Step 2: Select lowest quality download URL
+        download_url = None
+        formats = result.get('formats', [])
+        if formats:
+            sorted_formats = sorted(formats, key=lambda x: int(x.get('height', 0) or 0))
+            for fmt in sorted_formats:
+                if fmt.get('url'):
+                    download_url = fmt['url']
+                    print(f"Using RapidAPI format: {fmt.get('qualityLabel', 'unknown')}")
+                    break
+            if not download_url:
+                raise ValueError("No valid download URL found in formats")
+        else:
+            video_formats = [fmt for fmt in result.get('adaptiveFormats', []) if fmt.get('mimeType', '').startswith('video/')]
+            if video_formats:
+                sorted_video_formats = sorted(video_formats, key=lambda x: int(x.get('height', 0) or 0))
+                download_url = sorted_video_formats[0].get('url')
+                print(f"Using RapidAPI adaptive format: {sorted_video_formats[0].get('qualityLabel', 'unknown')}")
             else:
-                video_formats = [fmt for fmt in result.get('adaptiveFormats', []) if fmt.get('mimeType', '').startswith('video/')]
-                if video_formats:
-                    sorted_video_formats = sorted(video_formats, key=lambda x: int(x.get('height', 0) or 0))
-                    download_url = sorted_video_formats[0].get('url')
-                    print(f"Using RapidAPI adaptive format: {sorted_video_formats[0].get('qualityLabel', 'unknown')}")
-                else:
-                    raise ValueError("No video formats found")
+                raise ValueError("No video formats found")
 
-            # Step 3: Download the video
-            download_headers = {
-                'Referer': 'https://www.youtube.com/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
-            }
-            print(f"Downloading video to path: {input_path} with proxy {proxy_url}")
-            os.makedirs(os.path.dirname(input_path), exist_ok=True)
-            with requests.get(download_url, headers=download_headers, stream=True, timeout=90, proxies=proxies_dict) as r:
-                r.raise_for_status()
-                with open(input_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
+        # Step 3: Download the video
+        download_headers = {
+            'Referer': 'https://www.youtube.com/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+        }
+        print(f"Downloading video to path: {input_path}")
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
+        with requests.get(download_url, headers=download_headers, stream=True, timeout=90) as r:
+            r.raise_for_status()
+            with open(input_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
 
-            if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
-                raise ValueError("Downloaded file is too small or empty")
-            print(f"RapidAPI downloaded video {video_id} successfully with proxy {proxy_url}")
-            return True
-        except Exception as e:
-            print(f"RapidAPI download failed with proxy {proxy}: {str(e)}")
-            if os.path.exists(input_path):
-                try:
-                    os.remove(input_path)  # Clean up partial downloads
-                except:
-                    pass
-            continue  # Try the next proxy
-    print(f"All proxies failed for RapidAPI download of video {video_id}")
-    return False
+        if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
+            raise ValueError("Downloaded file is too small or empty")
+        print(f"RapidAPI downloaded video {video_id} successfully")
+        return True
+    except Exception as e:
+        print(f"RapidAPI download failed: {str(e)}")
+        if os.path.exists(input_path):
+            try:
+                os.remove(input_path)  # Clean up partial downloads
+            except:
+                pass
+        return False
 
 def download_via_ytdlp(video_id, input_path, use_cookies=True):
-    """Download video using yt-dlp with proxy retry mechanism"""
-    proxies = PROXY_LIST.copy()  # Copy the proxy list to avoid modifying the original
-    random.shuffle(proxies)  # Randomize proxy order
-    for proxy in proxies:
-        try:
-            # Construct proxy URL
-            host, port, user, pwd = proxy.split(":")
-            proxy_url = f"http://{user}:{pwd}@{host}:{port}"
-            ydl_opts = {
-                'format': 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]',  # Lowest quality
-                'outtmpl': input_path,
-                'proxy': proxy_url,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Referer': 'https://www.youtube.com/'
-                },
-                'cookiefile': COOKIES_FILE if use_cookies and os.path.exists(COOKIES_FILE) else None,
-                'retries': 10,
-                'fragment_retries': 10,
-            }
-            print(f"Using proxy for yt-dlp: {proxy_url}")
-            if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
-                print("Using cookies for yt-dlp download")
+    """Download video using yt-dlp without proxies"""
+    try:
+        ydl_opts = {
+            'format': 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]',  # Lowest quality
+            'outtmpl': input_path,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Referer': 'https://www.youtube.com/'
+            },
+            'cookiefile': COOKIES_FILE if use_cookies and os.path.exists(COOKIES_FILE) else None,
+            'retries': 10,
+            'fragment_retries': 10,
+        }
+        if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+            print("Using cookies for yt-dlp download")
 
-            os.makedirs(os.path.dirname(input_path), exist_ok=True)
-            urls_to_try = [
-                f'https://www.youtube.com/watch?v={video_id}',
-                f'https://www.youtube.com/embed/{video_id}',
-                f'https://youtu.be/{video_id}'
-            ]
-            last_error = None
-            for url in urls_to_try:
-                try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
-                    break
-                except Exception as e:
-                    last_error = e
-                    print(f"Download attempt failed for {url} with proxy {proxy_url}: {str(e)}")
-            else:
-                raise last_error or Exception("All URL formats failed")
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
+        urls_to_try = [
+            f'https://www.youtube.com/watch?v={video_id}',
+            f'https://www.youtube.com/embed/{video_id}',
+            f'https://youtu.be/{video_id}'
+        ]
+        last_error = None
+        for url in urls_to_try:
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
+                break
+            except Exception as e:
+                last_error = e
+                print(f"Download attempt failed for {url}: {str(e)}")
+        else:
+            raise last_error or Exception("All URL formats failed")
 
-            if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
-                raise Exception("Downloaded file is too small or empty")
-            print(f"yt-dlp downloaded video {video_id} successfully with proxy {proxy_url}")
-            return True
-        except Exception as e:
-            print(f"yt-dlp download failed with proxy {proxy}: {str(e)}")
-            if os.path.exists(input_path):
-                try:
-                    os.remove(input_path)  # Clean up partial downloads
-                except:
-                    pass
-            continue  # Try the next proxy
-    print(f"All proxies failed for yt-dlp download of video {video_id}")
-    return False
+        if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
+            raise Exception("Downloaded file is too small or empty")
+        print(f"yt-dlp downloaded video {video_id} successfully")
+        return True
+    except Exception as e:
+        print(f"yt-dlp download failed: {str(e)}")
+        if os.path.exists(input_path):
+            try:
+                os.remove(input_path)  # Clean up partial downloads
+            except:
+                pass
+        return False
 
 
 def download_via_pytube(video_id, input_path):
