@@ -79,14 +79,14 @@ def validate_cookies_file(cookies_path):
 
 PROXY_LIST = [
     "38.154.227.167:5868:pzvokxqt:v17333r03zxw",
+    "92.113.242.158:6742:pzvokxqt:v17333r03zxw",
+    "23.95.150.145:6114:pzvokxqt:v17333r03zxw",
     "198.23.239.134:6540:pzvokxqt:v17333r03zxw",
     "207.244.217.165:6712:pzvokxqt:v17333r03zxw",
     "107.172.163.27:6543:pzvokxqt:v17333r03zxw",
     "216.10.27.159:6837:pzvokxqt:v17333r03zxw",
     "136.0.207.84:6661:pzvokxqt:v17333r03zxw",
-    "64.64.118.149:6732:pzvokxqt:v17333r03zxw",
     "142.147.128.93:6593:pzvokxqt:v17333r03zxw",
-    "104.239.105.125:6655:pzvokxqt:v17333r03zxw",
     "206.41.172.74:6634:pzvokxqt:v17333r03zxw"
 ]
 
