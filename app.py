@@ -1154,7 +1154,7 @@ def download_via_sieve(video_id, input_path):
         output = youtube_downloader.run(
             url=f"https://www.youtube.com/watch?v={video_id}",
             download_type="video",
-            resolution="highest-available",
+            resolution="144p",  # Changed to lowest quality (assumes Sieve supports this)
             include_audio=True,
             start_time=0,
             end_time=-1,
@@ -1166,19 +1166,16 @@ def download_via_sieve(video_id, input_path):
             audio_format="mp3",
             subtitle_format="vtt"
         )
-        # Assuming output is a list and the first item contains the video URL
         if not output or 'video_url' not in output[0]:
             raise ValueError("No video URL found in Sieve output")
         video_url = output[0]['video_url']
         
-        # Download the video from the URL to the local input_path
         response = requests.get(video_url, stream=True, timeout=90)
         response.raise_for_status()
         with open(input_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
         
-        # Verify the downloaded file
         if os.path.getsize(input_path) < 1024:
             raise ValueError("Downloaded file is too small or empty")
         print(f"Sieve downloaded video {video_id} successfully")
@@ -1208,17 +1205,26 @@ def download_via_rapidapi(video_id, input_path):
         result = response.json()
 
         download_url = None
-        for fmt_list in [result.get('adaptiveFormats', []), result.get('formats', [])]:
-            for fmt in fmt_list:
+        # Prefer 'formats' (combined video+audio) and select lowest quality
+        formats = result.get('formats', [])
+        if formats:
+            sorted_formats = sorted(formats, key=lambda x: int(x.get('height', 0) or 0))
+            for fmt in sorted_formats:
                 if fmt.get('url'):
                     download_url = fmt['url']
                     print(f"Using RapidAPI format: {fmt.get('qualityLabel', 'unknown')}")
                     break
-            if download_url:
-                break
-
-        if not download_url:
-            raise ValueError("No valid download URL found via RapidAPI")
+            if not download_url:
+                raise ValueError("No valid download URL found in formats")
+        else:
+            # Fallback to 'adaptiveFormats', select lowest video quality
+            video_formats = [fmt for fmt in result.get('adaptiveFormats', []) if fmt.get('mimeType', '').startswith('video/')]
+            if video_formats:
+                sorted_video_formats = sorted(video_formats, key=lambda x: int(x.get('height', 0) or 0))
+                download_url = sorted_video_formats[0].get('url')
+                print(f"Using RapidAPI adaptive format: {sorted_video_formats[0].get('qualityLabel', 'unknown')}")
+            else:
+                raise ValueError("No video formats found")
 
         download_headers = {
             'Referer': 'https://www.youtube.com/',
@@ -1242,13 +1248,13 @@ def download_via_rapidapi(video_id, input_path):
         return False
 
 def download_via_ytdlp(video_id, input_path, use_cookies=True):
-    """Download video using yt-dlp with enhanced options and proxy support"""
+    """Download video using yt-dlp with enhanced options, proxy support, and Android configuration"""
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/mp4/best[height<=720]',
+        'format': 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]',  # Lowest quality
         'outtmpl': input_path,
         'proxy': get_random_proxy(),
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
             'Referer': 'https://www.youtube.com/'
@@ -1259,7 +1265,6 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
     }
     print(f"Using proxy for yt-dlp: {ydl_opts['proxy']}")
 
-    # Use cookies if available and valid
     if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
         ydl_opts['cookiefile'] = COOKIES_FILE
         print("Using cookies for yt-dlp download")
@@ -1301,44 +1306,30 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
 def download_via_pytube(video_id, input_path):
     """Download video using pytube with enhanced options"""
     try:
-        # Create YouTube object
         yt = YouTube(f'https://www.youtube.com/watch?v={video_id}')
         
-        # Get the highest resolution stream (up to 720p)
         stream = yt.streams.filter(
             file_extension='mp4',
-            progressive=True,
-            resolution='720p'
-        ).order_by('resolution').desc().first()
-        
-        # If no 720p stream, get the highest available
-        if not stream:
-            stream = yt.streams.filter(
-                file_extension='mp4',
-                progressive=True
-            ).order_by('resolution').desc().first()
+            progressive=True
+        ).order_by('resolution').first()  # Changed to select lowest resolution
         
         if not stream:
             raise Exception("No suitable video stream found")
         
         print(f"Downloading video {video_id} with resolution: {stream.resolution}")
         
-        # Ensure download directory exists
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
         
-        # Download the video
         stream.download(
             output_path=os.path.dirname(input_path),
             filename=os.path.basename(input_path))
         
-        # Verify download
         if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
             raise Exception("Downloaded file is too small or empty")
             
         return True
     except Exception as e:
         print(f"pytube download failed: {str(e)}")
-        # Clean up any partial files
         if os.path.exists(input_path):
             try:
                 os.remove(input_path)
