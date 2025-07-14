@@ -28,6 +28,7 @@ import logging
 import sieve
 import urllib3
 print(f"Using urllib3 version: {urllib3.__version__}")
+import types
 
 
 
@@ -1297,47 +1298,50 @@ def download_via_rapidapi(video_id, input_path):
 def download_via_ytdlp(video_id, input_path, use_cookies=True):
     """Download video using yt-dlp with a random proxy"""
     try:
-        proxy_url = get_random_proxy()  # Select a random proxy
-        print(f"Using proxy for yt-dlp: {proxy_url}")
-        ydl_opts = {
-            'format': 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]',  # Lowest quality
-            'outtmpl': input_path,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Referer': 'https://www.youtube.com/'
-            },
-            'cookiefile': COOKIES_FILE if use_cookies and os.path.exists(COOKIES_FILE) else None,
-            'proxy': proxy_url,  # Add proxy
-            'retries': 10,
-            'fragment_retries': 10,
-        }
-        if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
-            print("Using cookies for yt-dlp download")
+        for proxy in PROXY_LIST + [None]:   # Select a random proxy
+            proxy_url = None if proxy is None else f"http://{proxy.split(':')[2]}:{proxy.split(':')[3]}@{proxy.split(':')[0]}:{proxy.split(':')[1]}"
+            print(f"Using proxy for yt-dlp: {proxy_url}")
+            ydl_opts = {
+                'format': 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]',  # Lowest quality
+                'outtmpl': input_path,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Referer': 'https://www.youtube.com/'
+                },
+                'cookiefile': COOKIES_FILE if use_cookies and os.path.exists(COOKIES_FILE) else None,
+                'proxy': proxy_url,  # Add proxy
+                'retries': 10,
+                'fragment_retries': 10,
+            }
+            if use_cookies and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
+                print("Using cookies for yt-dlp download")
 
-        os.makedirs(os.path.dirname(input_path), exist_ok=True)
-        urls_to_try = [
-            f'https://www.youtube.com/watch?v={video_id}',
-            f'https://www.youtube.com/embed/{video_id}',
-            f'https://youtu.be/{video_id}'
-        ]
-        last_error = None
-        for url in urls_to_try:
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
-                break
-            except Exception as e:
-                last_error = e
-                print(f"Download attempt failed for {url} with proxy {proxy_url}: {str(e)}")
-        else:
-            raise last_error or Exception("All URL formats failed")
-
-        if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
-            raise Exception("Downloaded file is too small or empty")
-        print(f"yt-dlp downloaded video {video_id} successfully")
-        return True
+            os.makedirs(os.path.dirname(input_path), exist_ok=True)
+            urls_to_try = [
+                f'https://www.youtube.com/watch?v={video_id}',
+                f'https://www.youtube.com/embed/{video_id}',
+                f'https://youtu.be/{video_id}'
+            ]
+            last_error = None
+            for url in urls_to_try:
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
+                    break
+                except Exception as e:
+                    last_error = e
+                    print(f"Download attempt failed for {url} with proxy {proxy_url}: {str(e)}")
+            else:
+                continue  # Try next proxy
+            # If we get here, download succeeded
+            if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
+                raise Exception("Downloaded file is too small or empty")
+            print(f"yt-dlp downloaded video {video_id} successfully")
+            return True
+        # If all proxies failed
+        raise last_error or Exception("All URL formats failed")
     except Exception as e:
         print(f"yt-dlp download failed: {str(e)}")
         if os.path.exists(input_path):
