@@ -1179,77 +1179,53 @@ def download_via_sieve(video_id, input_path):
         if output is None:
             raise ValueError(f"Sieve output is None for video {video_id}")
         
-        video_url = None
-        
-        # Case 1: Output is a dictionary
-        if isinstance(output, dict):
-            print(f"Output keys: {output.keys()}")
-            if 'video_url' in output:
-                video_url = output['video_url']
-            elif 'error' in output:
-                raise ValueError(f"Sieve returned an error: {output['error']}")
-            else:
-                raise ValueError(f"No video URL or error in output dictionary: {output}")
-        
-        # Case 2: Output is iterable (e.g., generator or list)
-        elif hasattr(output, '__iter__') and not isinstance(output, str):
-            output_list = list(output)  # Convert to list for inspection
-            print(f"Output items count: {len(output_list)}")
-            print(f"Output items: {output_list}")
-            
-            if not output_list:
-                raise ValueError(f"Sieve output is empty for video {video_id}")
-            
-            for item in output_list:
-                print(f"Item type: {type(item)}")
-                # Handle sieve.File objects
-                if isinstance(item, sieve.File):
-                    video_url = item.path
-                    break  # Assume the first sieve.File is the video
-                # Handle dictionary items
-                elif isinstance(item, dict):
-                    if 'video_url' in item:
-                        video_url = item['video_url']
-                        break
-                    elif 'error' in item:
-                        raise ValueError(f"Sieve error in item: {item['error']}")
-                # Handle objects with attributes
-                elif hasattr(item, 'video_url'):
-                    video_url = item.video_url
-                    break
-                elif hasattr(item, 'error'):
-                    raise ValueError(f"Sieve error in item: {item.error}")
-            
-            if not video_url:
-                raise ValueError("No video URL or sieve.File found in output items")
-        
-        # Case 3: Output is a single sieve.File
-        elif isinstance(output, sieve.File):
-            video_url = output.path
-            print(f"Output is a single sieve.File: {output}")
-        
-        # Case 4: Unexpected output type
+        # Convert generator to list if necessary
+        if isinstance(output, types.GeneratorType):
+            output_list = list(output)
         else:
-            raise ValueError(f"Unexpected output type from Sieve: {type(output)}")
+            output_list = [output]
         
-        # Ensure video_url was found
-        if not video_url:
-            raise ValueError("No video URL found after processing output")
+        print(f"Output items count: {len(output_list)}")
+        print(f"Output items: {output_list}")
         
-        # Download the video
-        response = requests.get(video_url, stream=True, timeout=90)
-        response.raise_for_status()
-        os.makedirs(os.path.dirname(input_path), exist_ok=True)
-        with open(input_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+        if not output_list:
+            raise ValueError(f"Sieve output is empty for video {video_id}")
         
-        # Verify the downloaded file
-        if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
-            raise ValueError("Downloaded file is too small or empty")
+        # Process the output items
+        for item in output_list:
+            print(f"Item type: {type(item)}")
+            if isinstance(item, sieve.File):
+                local_path = item.path
+                # Ensure the local file exists
+                if not os.path.exists(local_path):
+                    raise ValueError(f"Local file does not exist: {local_path}")
+                # Create the destination directory if it doesn't exist
+                os.makedirs(os.path.dirname(input_path), exist_ok=True)
+                # Copy the local file to input_path
+                shutil.copy(local_path, input_path)
+                print(f"Copied local file {local_path} to {input_path}")
+                # Verify the copied file
+                if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
+                    raise ValueError(f"Copied file is too small or missing: {input_path}")
+                return True
+            elif isinstance(item, dict):
+                if 'video_url' in item:
+                    video_url = item['video_url']
+                    # Download from video_url
+                    response = requests.get(video_url, stream=True, timeout=90)
+                    response.raise_for_status()
+                    os.makedirs(os.path.dirname(input_path), exist_ok=True)
+                    with open(input_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    print(f"Downloaded video from {video_url} to {input_path}")
+                    return True
+                elif 'error' in item:
+                    raise ValueError(f"Sieve error in item: {item['error']}")
+            else:
+                raise ValueError(f"Unexpected item type in output: {type(item)}")
         
-        print(f"Sieve downloaded video {video_id} successfully")
-        return True
+        raise ValueError("No valid video file or URL found in Sieve output")
     
     except Exception as e:
         print(f"Sieve download failed for video {video_id}: {str(e)}")
@@ -1319,8 +1295,10 @@ def download_via_rapidapi(video_id, input_path):
         return False
 
 def download_via_ytdlp(video_id, input_path, use_cookies=True):
-    """Download video using yt-dlp without proxies"""
+    """Download video using yt-dlp with a random proxy"""
     try:
+        proxy_url = get_random_proxy()  # Select a random proxy
+        print(f"Using proxy for yt-dlp: {proxy_url}")
         ydl_opts = {
             'format': 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]',  # Lowest quality
             'outtmpl': input_path,
@@ -1331,6 +1309,7 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
                 'Referer': 'https://www.youtube.com/'
             },
             'cookiefile': COOKIES_FILE if use_cookies and os.path.exists(COOKIES_FILE) else None,
+            'proxy': proxy_url,  # Add proxy
             'retries': 10,
             'fragment_retries': 10,
         }
@@ -1351,7 +1330,7 @@ def download_via_ytdlp(video_id, input_path, use_cookies=True):
                 break
             except Exception as e:
                 last_error = e
-                print(f"Download attempt failed for {url}: {str(e)}")
+                print(f"Download attempt failed for {url} with proxy {proxy_url}: {str(e)}")
         else:
             raise last_error or Exception("All URL formats failed")
 
