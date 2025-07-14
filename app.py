@@ -26,6 +26,8 @@ from pytube import YouTube
 import random
 import logging
 import sieve
+import urllib3
+print(f"Using urllib3 version: {urllib3.__version__}")
 
 
 
