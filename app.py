@@ -1234,40 +1234,52 @@ def download_via_sieve(video_id, input_path):
     
     
 
-def download_via_rapidapi(video_id, input_path):
-    """Download video using RapidAPI without proxies"""
+def download_via_social_media_downloader(video_id, input_path):
+    """Download video using social-media-video-downloader RapidAPI"""
     try:
-        # Step 1: Get download URL from RapidAPI
-        api_url = f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}"
-        headers = {
-            'x-rapidapi-key': '6820d4d822msh502bdc3b993dbd2p1a24c6jsndfbf9f3bc90b',
-            'x-rapidapi-host': 'ytstream-download-youtube-videos.p.rapidapi.com',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
-        }
-        response = requests.get(api_url, headers=headers, timeout=30)
-        response.raise_for_status()
-        result = response.json()
+        import http.client
+        import urllib.parse
+        import json
 
-        # Step 2: Select lowest quality download URL
+        # Step 1: Get download URL from social-media-video-downloader API
+        conn = http.client.HTTPSConnection("social-media-video-downloader.p.rapidapi.com")
+        
+        headers = {
+            'x-rapidapi-key': "ea31c81ebamsh1f3eeb9bc2fc23ep1f5398jsn676a2478bbd0",
+            'x-rapidapi-host': "social-media-video-downloader.p.rapidapi.com"
+        }
+        
+        # Construct the YouTube URL
+        youtube_url = f"https://youtu.be/{video_id}"
+        encoded_url = urllib.parse.quote(youtube_url, safe='')
+        
+        conn.request("GET", f"/smvd/get/youtube?url={encoded_url}", headers=headers)
+        res = conn.getresponse()
+        data = res.read()
+        conn.close()
+        
+        result = json.loads(data.decode("utf-8"))
+        
+        # Step 2: Extract download URL from response
         download_url = None
-        formats = result.get('formats', [])
-        if formats:
-            sorted_formats = sorted(formats, key=lambda x: int(x.get('height', 0) or 0))
-            for fmt in sorted_formats:
-                if fmt.get('url'):
-                    download_url = fmt['url']
-                    print(f"Using RapidAPI format: {fmt.get('qualityLabel', 'unknown')}")
-                    break
-            if not download_url:
-                raise ValueError("No valid download URL found in formats")
-        else:
-            video_formats = [fmt for fmt in result.get('adaptiveFormats', []) if fmt.get('mimeType', '').startswith('video/')]
-            if video_formats:
-                sorted_video_formats = sorted(video_formats, key=lambda x: int(x.get('height', 0) or 0))
-                download_url = sorted_video_formats[0].get('url')
-                print(f"Using RapidAPI adaptive format: {sorted_video_formats[0].get('qualityLabel', 'unknown')}")
-            else:
-                raise ValueError("No video formats found")
+        if 'links' in result:
+            # Look for the lowest quality video link
+            video_links = []
+            for link in result['links']:
+                if link.get('type') == 'video' and link.get('url'):
+                    quality = link.get('quality', '720p')
+                    # Extract quality number for sorting
+                    quality_num = int(''.join(filter(str.isdigit, quality))) if quality else 0
+                    video_links.append((quality_num, link))
+            
+            if video_links:
+                # Sort by quality (lowest first) and get the URL
+                video_links.sort(key=lambda x: x[0])
+                download_url = video_links[0][1]['url']
+                print(f"Using social-media-downloader format: {video_links[0][1].get('quality', 'unknown')}")
+        
+        if not download_url:
+            raise ValueError("No valid download URL found in social-media-downloader response")
 
         # Step 3: Download the video
         download_headers = {
@@ -1276,6 +1288,7 @@ def download_via_rapidapi(video_id, input_path):
         }
         print(f"Downloading video to path: {input_path}")
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
+        
         with requests.get(download_url, headers=download_headers, stream=True, timeout=90) as r:
             r.raise_for_status()
             with open(input_path, 'wb') as f:
@@ -1284,10 +1297,79 @@ def download_via_rapidapi(video_id, input_path):
 
         if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
             raise ValueError("Downloaded file is too small or empty")
-        print(f"RapidAPI downloaded video {video_id} successfully")
+        print(f"Social-media-downloader downloaded video {video_id} successfully")
         return True
     except Exception as e:
-        print(f"RapidAPI download failed: {str(e)}")
+        print(f"Social-media-downloader download failed: {str(e)}")
+        if os.path.exists(input_path):
+            try:
+                os.remove(input_path)  # Clean up partial downloads
+            except:
+                pass
+        return False
+
+def download_via_youtube_media_downloader(video_id, input_path):
+    """Download video using youtube-media-downloader RapidAPI"""
+    try:
+        import http.client
+        import json
+
+        # Step 1: Get download URL from youtube-media-downloader API
+        conn = http.client.HTTPSConnection("youtube-media-downloader.p.rapidapi.com")
+        
+        headers = {
+            'x-rapidapi-key': "ea31c81ebamsh1f3eeb9bc2fc23ep1f5398jsn676a2478bbd0",
+            'x-rapidapi-host': "youtube-media-downloader.p.rapidapi.com"
+        }
+        
+        conn.request("GET", f"/v2/video/details?videoId={video_id}&urlAccess=normal&videos=auto&audios=auto", headers=headers)
+        res = conn.getresponse()
+        data = res.read()
+        conn.close()
+        
+        result = json.loads(data.decode("utf-8"))
+        
+        # Step 2: Extract download URL from response
+        download_url = None
+        if 'videos' in result:
+            # Look for the lowest quality video
+            video_formats = []
+            for video in result['videos']:
+                if video.get('url'):
+                    quality = video.get('quality', '720p')
+                    # Extract quality number for sorting
+                    quality_num = int(''.join(filter(str.isdigit, quality))) if quality else 0
+                    video_formats.append((quality_num, video))
+            
+            if video_formats:
+                # Sort by quality (lowest first) and get the URL
+                video_formats.sort(key=lambda x: x[0])
+                download_url = video_formats[0][1]['url']
+                print(f"Using youtube-media-downloader format: {video_formats[0][1].get('quality', 'unknown')}")
+        
+        if not download_url:
+            raise ValueError("No valid download URL found in youtube-media-downloader response")
+
+        # Step 3: Download the video
+        download_headers = {
+            'Referer': 'https://www.youtube.com/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+        }
+        print(f"Downloading video to path: {input_path}")
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
+        
+        with requests.get(download_url, headers=download_headers, stream=True, timeout=90) as r:
+            r.raise_for_status()
+            with open(input_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+        if not os.path.exists(input_path) or os.path.getsize(input_path) < 1024:
+            raise ValueError("Downloaded file is too small or empty")
+        print(f"Youtube-media-downloader downloaded video {video_id} successfully")
+        return True
+    except Exception as e:
+        print(f"Youtube-media-downloader download failed: {str(e)}")
         if os.path.exists(input_path):
             try:
                 os.remove(input_path)  # Clean up partial downloads
@@ -1393,6 +1475,16 @@ def download_video(video_id, input_path):
     if download_via_sieve(video_id, input_path):
         return True
     
+    # Then try social-media-video-downloader RapidAPI
+    print("Attempting social-media-video-downloader RapidAPI")
+    if download_via_social_media_downloader(video_id, input_path):
+        return True
+    
+    # Then try youtube-media-downloader RapidAPI
+    print("Attempting youtube-media-downloader RapidAPI")
+    if download_via_youtube_media_downloader(video_id, input_path):
+        return True
+    
     # Then try yt-dlp with cookies
     if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100:
         print("Attempting yt-dlp with cookies")
@@ -1402,11 +1494,6 @@ def download_video(video_id, input_path):
     # Then try pytube
     print("Attempting pytube")
     if download_via_pytube(video_id, input_path):
-        return True
-    
-    # Then try RapidAPI
-    print("Attempting RapidAPI")
-    if download_via_rapidapi(video_id, input_path):
         return True
     
     # Finally try yt-dlp without cookies
